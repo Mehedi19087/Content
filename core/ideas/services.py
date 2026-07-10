@@ -1,0 +1,1503 @@
+from __future__ import annotations
+
+import math
+import re
+import uuid
+from collections import Counter
+from datetime import timedelta
+from typing import Any
+
+from django.db import transaction
+from django.db.models import QuerySet
+from django.utils import timezone
+from rest_framework.exceptions import NotFound, ValidationError
+
+from categories.models import Category
+from .groq_client import GroqClient
+from .models import IdeaCandidate
+from .openai_image_client import OpenAIImageClient
+from .youtube_client import YouTubeClient
+
+
+MAX_IDEAS_PER_REFRESH = 10
+MAX_INTENT_KEYWORDS = 6
+
+BANNED_TITLE_PHRASES = {
+    "exploring",
+    "the future of",
+    "impact on daily life",
+    "opportunities and challenges",
+    "various industries",
+    "daily life",
+    "potential is vast",
+    "potential impact",
+}
+
+WEAK_WHY_NOW_PHRASES = {
+    "has been gaining popularity",
+    "is becoming increasingly important",
+    "their potential is vast",
+    "applications in daily life are vast",
+    "potential is vast",
+}
+
+STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "how",
+    "i",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "this",
+    "to",
+    "with",
+    "you",
+    "your",
+}
+
+
+def get_active_ideas(
+    *,
+    category_slug: str,
+    region_code: str = "US",
+    limit: int = MAX_IDEAS_PER_REFRESH,
+) -> QuerySet[IdeaCandidate]:
+    category = get_active_category_by_slug(category_slug)
+    return IdeaCandidate.objects.filter(
+        category=category,
+        region_code=region_code,
+        is_active=True,
+    ).order_by("-trend_score", "-generated_at")[:limit]
+
+
+def refresh_ideas_for_category(
+    *,
+    category_slug: str,
+    region_code: str = "US",
+    limit: int = MAX_IDEAS_PER_REFRESH,
+) -> list[IdeaCandidate]:
+    category = get_active_category_by_slug(category_slug)
+    validate_category_region(category=category, region_code=region_code)
+
+    youtube_client = YouTubeClient()
+    videos = collect_youtube_videos(
+        youtube_client=youtube_client,
+        category=category,
+        region_code=region_code,
+    )
+
+    if not videos:
+        raise ValidationError(
+            {"videos": "No usable YouTube videos found for this category and region."}
+        )
+
+    scored_videos = score_videos(videos, category=category)
+    clusters = cluster_videos(scored_videos, limit=limit)
+    ideas = generate_ideas_with_groq(
+        category=category,
+        region_code=region_code,
+        clusters=clusters,
+        limit=limit,
+    )
+
+    return save_idea_candidates(
+        category=category,
+        region_code=region_code,
+        ideas=ideas,
+        source_video_count=len(scored_videos),
+    )
+
+
+def research_youtube_intent_for_idea(
+    *,
+    idea: str,
+    region_code: str = "US",
+    language_code: str = "en",
+    max_results: int = 10,
+) -> dict[str, Any]:
+    query = build_youtube_intent_query(idea)
+    youtube_client = YouTubeClient()
+    search_results = youtube_client.search_videos_by_query(
+        query=query,
+        region_code=region_code,
+        language_code=language_code,
+        max_results=max_results,
+    )
+    video_ids = [item["video_id"] for item in search_results if item.get("video_id")]
+
+    if not video_ids:
+        raise ValidationError({"youtube_results": "No YouTube videos found for this idea."})
+
+    videos = youtube_client.fetch_videos_by_ids(video_ids)
+    if not videos:
+        raise ValidationError(
+            {"youtube_results": "No YouTube video details found for this idea."}
+        )
+
+    normalized_videos = normalize_intent_videos(videos)
+    if not normalized_videos:
+        raise ValidationError(
+            {"youtube_results": "No usable YouTube video metadata found for this idea."}
+        )
+
+    return analyze_youtube_intent(
+        idea=idea,
+        query=query,
+        videos=normalized_videos,
+    )
+
+
+def build_youtube_intent_query(idea: str) -> str:
+    words = [
+        word
+        for word in re.findall(r"[a-zA-Z0-9]+", idea.lower())
+        if word not in STOP_WORDS and len(word) > 1
+    ]
+    return " ".join(words[:8]) or idea.strip()
+
+
+def normalize_intent_videos(videos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_videos = []
+
+    for video in videos:
+        snippet = video.get("snippet", {})
+        statistics = video.get("statistics", {})
+        title = snippet.get("title", "").strip()
+        description = snippet.get("description", "").strip()
+        if not title:
+            continue
+
+        normalized_videos.append(
+            {
+                "video_id": video.get("id", ""),
+                "title": title,
+                "description": description,
+                "channel_title": snippet.get("channelTitle", ""),
+                "view_count": parse_int(statistics.get("viewCount")),
+                "like_count": parse_int(statistics.get("likeCount")),
+                "thumbnail_url": get_thumbnail_url(snippet),
+                "tags": normalize_string_list(snippet.get("tags", [])),
+            }
+        )
+
+    return normalized_videos
+
+
+def analyze_youtube_intent(
+    *,
+    idea: str,
+    query: str,
+    videos: list[dict[str, Any]],
+) -> dict[str, Any]:
+    titles = [video["title"] for video in videos]
+    combined_text = " ".join(
+        [idea, query]
+        + titles
+        + [video.get("description", "")[:300] for video in videos]
+    ).lower()
+    keywords = extract_seo_keywords(
+        idea=idea,
+        videos=videos,
+    )
+    content_type = detect_content_type(titles=titles, combined_text=combined_text)
+
+    return {
+        "viewer_intent": build_viewer_intent(
+            keywords=keywords,
+            content_type=content_type,
+        ),
+        "content_type": content_type,
+        "title_patterns": detect_title_patterns(titles),
+        "emotional_angles": detect_emotional_angles(combined_text),
+        "thumbnail_subjects": detect_thumbnail_subjects(
+            idea=idea,
+            combined_text=combined_text,
+            keywords=keywords,
+        ),
+        "seo_keywords": keywords,
+    }
+
+
+def prepare_thumbnail_from_intent(
+    *,
+    idea: str,
+    youtube_intent: dict[str, Any],
+) -> dict[str, Any]:
+    subjects = normalize_string_list(youtube_intent.get("thumbnail_subjects", []))
+    emotional_angles = normalize_string_list(youtube_intent.get("emotional_angles", []))
+    seo_keywords = normalize_string_list(youtube_intent.get("seo_keywords", []))
+    content_type = str(youtube_intent.get("content_type", "")).strip()
+    viewer_intent = str(youtube_intent.get("viewer_intent", "")).strip()
+
+    subject_plan = build_thumbnail_subject_plan(
+        subjects=subjects,
+        idea=idea,
+    )
+    hook_cards = build_thumbnail_hook_cards(
+        idea=idea,
+        content_type=content_type,
+        viewer_intent=viewer_intent,
+        emotional_angles=emotional_angles,
+        seo_keywords=seo_keywords,
+    )
+
+    return {
+        "hook_cards": hook_cards,
+        "subject_plan": subject_plan,
+        "image_preparation": build_image_preparation(subject_plan),
+        "creator_image": {
+            "ask_user_for_own_image": True,
+            "source": "profile_or_upload",
+            "question": "Do you want to use your own image in the thumbnail?",
+        },
+    }
+
+
+def build_thumbnail_subject_plan(
+    *,
+    subjects: list[str],
+    idea: str,
+) -> list[dict[str, Any]]:
+    subject_plan = []
+    selected_subjects = subjects[:3] or ["curious person looking at screen"]
+
+    for subject in selected_subjects:
+        subject_type = detect_thumbnail_subject_type(subject)
+        source = "ai_generate"
+        ai_prompt = build_subject_image_prompt(
+            subject=subject,
+            subject_type=subject_type,
+            idea=idea,
+        )
+
+        subject_plan.append(
+            {
+                "type": subject_type,
+                "role": "supporting_subject",
+                "description": subject,
+                "count": 1,
+                "source": source,
+                "ai_prompt": ai_prompt,
+            }
+        )
+
+    return subject_plan
+
+
+def detect_thumbnail_subject_type(subject: str) -> str:
+    subject_lower = subject.lower()
+    human_markers = (
+        "person",
+        "man",
+        "woman",
+        "boy",
+        "girl",
+        "student",
+        "creator",
+        "worker",
+        "human",
+        "face",
+    )
+    return "human" if any(marker in subject_lower for marker in human_markers) else "object"
+
+
+def build_subject_image_prompt(
+    *,
+    subject: str,
+    subject_type: str,
+    idea: str,
+) -> str:
+    if subject_type == "human":
+        return (
+            f"Generate a photorealistic {subject} for a YouTube thumbnail about "
+            f"{idea}. Clear facial expression, dramatic high contrast lighting, "
+            "real camera look, clean composition, no text."
+        )
+    return (
+        f"Generate a photorealistic object/scene of {subject} for a YouTube thumbnail "
+        f"about {idea}. High contrast, clear shape, realistic detail, clean composition, "
+        "no text."
+    )
+
+
+def build_image_preparation(subject_plan: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "uses_google_search": False,
+        "all_non_creator_subjects_generated_by_ai": True,
+        "ask_user_for_own_image": True,
+        "ai_subject_prompts": [
+            subject["ai_prompt"]
+            for subject in subject_plan
+            if subject.get("ai_prompt")
+        ],
+    }
+
+
+def generate_content_package(
+    *,
+    idea: str,
+    youtube_intent: dict[str, Any],
+    selected_hook: dict[str, Any],
+    subject_plan: list[dict[str, Any]],
+    creator_image_choice: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    creator_image_choice = creator_image_choice or {}
+    package_plan = generate_package_plan_with_groq(
+        idea=idea,
+        youtube_intent=youtube_intent,
+        selected_hook=selected_hook,
+        subject_plan=subject_plan,
+        creator_image_choice=creator_image_choice,
+    )
+    thumbnail_prompt = package_plan["thumbnail_prompt"]
+    thumbnail_asset = OpenAIImageClient().generate_thumbnail(
+        prompt=thumbnail_prompt,
+        filename_prefix=slugify_phrase(idea),
+    )
+
+    return {
+        "thumbnail": {
+            "url": thumbnail_asset["url"],
+            "model": thumbnail_asset["model"],
+            "size": thumbnail_asset["size"],
+            "quality": thumbnail_asset["quality"],
+            "selected_hook": selected_hook,
+            "prompt": thumbnail_prompt,
+            "used_subjects": subject_plan,
+        },
+        "seo": package_plan["seo"],
+        "edit_options": package_plan["edit_options"],
+    }
+
+
+def generate_package_plan_with_groq(
+    *,
+    idea: str,
+    youtube_intent: dict[str, Any],
+    selected_hook: dict[str, Any],
+    subject_plan: list[dict[str, Any]],
+    creator_image_choice: dict[str, Any],
+) -> dict[str, Any]:
+    system_prompt = """
+You create a YouTube thumbnail prompt and SEO package for creators.
+Return strict JSON with keys: thumbnail_prompt, seo, edit_options.
+
+thumbnail_prompt rules:
+- Target a 16:9 YouTube thumbnail.
+- Use photorealistic subjects and high contrast lighting.
+- Render the selected thumbnail text exactly as provided.
+- Place the selected text in the most readable negative space based on the visual composition.
+- Do not force the text to the left, right, top, or bottom.
+- The selected text must be large, bold, readable, correctly spelled, and visually balanced.
+- The selected text must not cover faces, eyes, hands, the main object, or the core emotion.
+- Do not add any other text, captions, labels, letters, watermarks, or logos.
+- Use a dark contrast area behind the selected text so it is readable at mobile size.
+- Do not mention copyrighted logos unless the user explicitly provided them.
+
+seo rules:
+- seo must include title, description, tags, hashtags, keywords.
+- title should be clickable but honest.
+- description should start with two strong SEO lines.
+- tags and keywords must be arrays.
+
+edit_options must be 4 short strings.
+""".strip()
+    user_payload = {
+        "idea": idea,
+        "youtube_intent": youtube_intent,
+        "selected_hook": selected_hook,
+        "subject_plan": subject_plan,
+        "creator_image_choice": creator_image_choice,
+        "output_requirements": {
+            "thumbnail_size": "16:9",
+            "thumbnail_text": selected_hook.get("thumbnail_text", ""),
+            "seo_language": "English",
+        },
+    }
+    generated = GroqClient().generate_json(
+        system_prompt=system_prompt,
+        user_payload=user_payload,
+        temperature=0.25,
+    )
+    return normalize_generated_package_plan(
+        generated=generated,
+        idea=idea,
+        youtube_intent=youtube_intent,
+        selected_hook=selected_hook,
+        subject_plan=subject_plan,
+    )
+
+
+def normalize_generated_package_plan(
+    *,
+    generated: Any,
+    idea: str,
+    youtube_intent: dict[str, Any],
+    selected_hook: dict[str, Any],
+    subject_plan: list[dict[str, Any]],
+) -> dict[str, Any]:
+    generated = generated if isinstance(generated, dict) else {}
+    thumbnail_text = str(selected_hook.get("thumbnail_text", "")).strip()
+    fallback_prompt = build_fallback_thumbnail_prompt(
+        idea=idea,
+        youtube_intent=youtube_intent,
+        selected_hook=selected_hook,
+        subject_plan=subject_plan,
+    )
+    thumbnail_prompt = str(generated.get("thumbnail_prompt", "")).strip()
+    if not thumbnail_prompt or thumbnail_text not in thumbnail_prompt:
+        thumbnail_prompt = fallback_prompt
+
+    seo = generated.get("seo", {})
+    if not isinstance(seo, dict):
+        seo = {}
+    seo = normalize_seo_package(
+        seo=seo,
+        idea=idea,
+        youtube_intent=youtube_intent,
+    )
+
+    edit_options = normalize_string_list(generated.get("edit_options", []))
+    if len(edit_options) < 4:
+        edit_options = [
+            "Change thumbnail text",
+            "Use my face",
+            "Regenerate with stronger emotion",
+            "Replace background",
+        ]
+
+    return {
+        "thumbnail_prompt": thumbnail_prompt,
+        "seo": seo,
+        "edit_options": edit_options[:4],
+    }
+
+
+def build_fallback_thumbnail_prompt(
+    *,
+    idea: str,
+    youtube_intent: dict[str, Any],
+    selected_hook: dict[str, Any],
+    subject_plan: list[dict[str, Any]],
+) -> str:
+    subject_descriptions = ", ".join(
+        str(subject.get("description", "")).strip()
+        for subject in subject_plan
+        if subject.get("description")
+    )
+    thumbnail_text = selected_hook.get("thumbnail_text", "")
+    viewer_intent = youtube_intent.get("viewer_intent", "")
+    return (
+        "Create a photorealistic 16:9 YouTube thumbnail. "
+        f"Video idea: {idea}. Viewer intent: {viewer_intent}. "
+        f"Main visual subjects: {subject_descriptions}. "
+        f"Render this exact thumbnail text inside the image: {thumbnail_text}. "
+        "Dramatic high contrast lighting, clear emotional expression, professional "
+        "creator thumbnail style, strong focal hierarchy, large bold white/yellow text "
+        "placed in the most readable empty space, dark stroke or shadow behind text, "
+        "correct spelling, readable at mobile size, do not cover face, eyes, hands, "
+        "main object, or core emotion, no extra text, no logos."
+    )
+
+
+def normalize_seo_package(
+    *,
+    seo: dict[str, Any],
+    idea: str,
+    youtube_intent: dict[str, Any],
+) -> dict[str, Any]:
+    keywords = normalize_string_list(
+        seo.get("keywords") or youtube_intent.get("seo_keywords", [])
+    )
+    tags = normalize_string_list(seo.get("tags") or keywords)
+    hashtags = normalize_string_list(seo.get("hashtags", []))
+    if not hashtags:
+        hashtags = [
+            f"#{keyword.replace(' ', '')}"
+            for keyword in keywords[:3]
+            if keyword
+        ]
+
+    title = str(seo.get("title", "")).strip() or idea
+    description = str(seo.get("description", "")).strip()
+    if not description:
+        description = (
+            f"{idea}\n\n"
+            f"{youtube_intent.get('viewer_intent', 'This video explains the topic clearly.')}"
+        )
+
+    return {
+        "title": title[:100],
+        "description": description,
+        "tags": tags[:15],
+        "hashtags": hashtags[:5],
+        "keywords": keywords[:10],
+    }
+
+
+def build_thumbnail_hook_cards(
+    *,
+    idea: str,
+    content_type: str,
+    viewer_intent: str,
+    emotional_angles: list[str],
+    seo_keywords: list[str],
+) -> list[dict[str, str]]:
+    topic = seo_keywords[0] if seo_keywords else extract_short_topic(idea)
+    angle_order = choose_thumbnail_angle_order(
+        content_type=content_type,
+        emotional_angles=emotional_angles,
+    )
+    cards = []
+
+    for angle in angle_order[:3]:
+        cards.append(
+            {
+                "id": angle.replace(" ", "_"),
+                "angle": angle,
+                "label": angle.title(),
+                "thumbnail_text": build_thumbnail_text(
+                    angle=angle,
+                    topic=topic,
+                    content_type=content_type,
+                ),
+                "reason": build_thumbnail_hook_reason(
+                    angle=angle,
+                    viewer_intent=viewer_intent,
+                ),
+            }
+        )
+
+    return cards
+
+
+def choose_thumbnail_angle_order(
+    *,
+    content_type: str,
+    emotional_angles: list[str],
+) -> list[str]:
+    normalized_angles = " ".join(emotional_angles).lower()
+    content_type_lower = content_type.lower()
+
+    if "warning" in content_type_lower or "fear" in normalized_angles:
+        preferred = ["fear", "shock", "curiosity"]
+    elif "tool recommendation" in content_type_lower or "productivity" in normalized_angles:
+        preferred = ["shock", "curiosity", "result"]
+    elif "tutorial" in content_type_lower:
+        preferred = ["curiosity", "result", "fear"]
+    else:
+        preferred = ["curiosity", "shock", "fear"]
+
+    return preferred
+
+
+def build_thumbnail_text(*, angle: str, topic: str, content_type: str) -> str:
+    topic_words = topic.split()[:2]
+    short_topic = " ".join(topic_words).title() if topic_words else "This"
+
+    if angle == "fear":
+        if "warning" in content_type.lower():
+            return "Avoid This"
+        return "Don't Miss This"
+    if angle == "shock":
+        return "This Changed Everything"
+    if angle == "result":
+        return f"{short_topic} Works"
+    return "Nobody Explains This"
+
+
+def build_thumbnail_hook_reason(*, angle: str, viewer_intent: str) -> str:
+    if angle == "fear":
+        return f"Uses risk or mistake tension around the viewer need: {viewer_intent}"
+    if angle == "shock":
+        return f"Creates a strong surprise promise around the viewer need: {viewer_intent}"
+    if angle == "result":
+        return f"Focuses on the practical outcome the viewer wants: {viewer_intent}"
+    return f"Opens a curiosity gap around the viewer need: {viewer_intent}"
+
+
+def extract_short_topic(idea: str) -> str:
+    words = [
+        word
+        for word in re.findall(r"[a-zA-Z0-9]+", idea.lower())
+        if word not in STOP_WORDS and len(word) > 2
+    ]
+    return " ".join(words[:2]) or "this topic"
+
+
+def detect_content_type(*, titles: list[str], combined_text: str) -> str:
+    title_text = " ".join(titles).lower()
+    checks = [
+        ("tutorial / how-to", ("how to", "tutorial", "step by step", "guide")),
+        ("listicle / tool recommendation", ("best", "top", "tools", "apps")),
+        ("comparison / review", (" vs ", "versus", "review", "compared", "comparison")),
+        ("mistakes / warning", ("mistake", "avoid", "warning", "stop", "don't")),
+        ("explainer / education", ("explained", "what is", "why", "beginner")),
+        ("news / update", ("new", "update", "changed", "latest", "launched")),
+    ]
+
+    for content_type, markers in checks:
+        if any(marker in title_text for marker in markers):
+            return content_type
+    if any(marker in combined_text for marker in ("best", "tools", "top")):
+        return "listicle / tool recommendation"
+    return "explainer / education"
+
+
+def detect_title_patterns(titles: list[str]) -> list[str]:
+    patterns = []
+    title_text = " ".join(titles).lower()
+    pattern_checks = [
+        ("Best [topic]", ("best",)),
+        ("Top [number] [topic]", ("top",)),
+        ("[topic] that save time", ("save time", "hours", "faster")),
+        ("[topic] that replace work", ("replace", "automate", "automation")),
+        ("How to use [topic]", ("how to", "tutorial")),
+        ("[topic] mistakes to avoid", ("mistake", "avoid", "warning")),
+        ("I tested [topic]", ("i tested", "tested")),
+        ("[topic] explained", ("explained", "what is")),
+    ]
+
+    for pattern, markers in pattern_checks:
+        if any(marker in title_text for marker in markers):
+            patterns.append(pattern)
+
+    if not patterns:
+        patterns = ["Best [topic]", "How to use [topic]", "[topic] explained"]
+    return patterns[:3]
+
+
+def detect_emotional_angles(combined_text: str) -> list[str]:
+    angles = []
+    checks = [
+        ("shock", ("shocking", "changed", "replace", "secret", "insane")),
+        ("fear of falling behind", ("warning", "mistake", "avoid", "stop", "risk")),
+        ("productivity gain", ("save time", "faster", "automate", "productivity")),
+        ("curiosity gap", ("nobody", "hidden", "unknown", "why", "secret")),
+        ("beginner confidence", ("beginner", "easy", "simple", "step by step")),
+    ]
+
+    for angle, markers in checks:
+        if any(marker in combined_text for marker in markers):
+            angles.append(angle)
+
+    if not angles:
+        angles = ["curiosity gap", "productivity gain", "shock"]
+    return angles[:3]
+
+
+def detect_thumbnail_subjects(
+    *,
+    idea: str,
+    combined_text: str,
+    keywords: list[str],
+) -> list[str]:
+    subjects = []
+    if any(
+        marker in combined_text
+        for marker in ("mistake", "warning", "replace", "secret", "shocking", "stop")
+    ):
+        subjects.append("shocked person at laptop")
+    elif any(marker in combined_text for marker in ("tutorial", "how to", "beginner")):
+        subjects.append("focused person using laptop")
+    else:
+        subjects.append("curious person looking at screen")
+
+    if "ai" in combined_text:
+        subjects.append("AI robot assistant")
+    if any(marker in combined_text for marker in ("tool", "tools", "app", "software")):
+        subjects.append("software dashboard on laptop")
+
+    for keyword in keywords:
+        if len(subjects) >= 3:
+            break
+        if keyword not in subjects:
+            subjects.append(keyword)
+
+    if len(subjects) < 3:
+        subjects.append("busy workspace")
+
+    return subjects[:3]
+
+
+def build_viewer_intent(*, keywords: list[str], content_type: str) -> str:
+    topic = keywords[0] if keywords else "this topic"
+    if "tool recommendation" in content_type:
+        return f"people want the best {topic} options and practical reasons to use them"
+    if "tutorial" in content_type:
+        return f"people want a clear step-by-step way to use {topic}"
+    if "comparison" in content_type:
+        return f"people want to compare {topic} options before choosing one"
+    if "warning" in content_type:
+        return f"people want to avoid mistakes and risks around {topic}"
+    if "news" in content_type:
+        return f"people want the latest update and why {topic} matters now"
+    return f"people want a clear explanation of {topic} and what to do next"
+
+
+def extract_seo_keywords(
+    *,
+    idea: str,
+    videos: list[dict[str, Any]],
+) -> list[str]:
+    keyword_counter: Counter[str] = Counter()
+    phrase_counter: Counter[str] = Counter()
+
+    for source in [idea] + [video["title"] for video in videos]:
+        words = [
+            word
+            for word in re.findall(r"[a-zA-Z0-9]+", source.lower())
+            if word not in STOP_WORDS and len(word) > 2
+        ]
+        keyword_counter.update(words)
+        for index in range(len(words) - 1):
+            phrase_counter[" ".join(words[index : index + 2])] += 1
+        for index in range(len(words) - 2):
+            phrase_counter[" ".join(words[index : index + 3])] += 1
+
+    for video in videos:
+        for tag in video.get("tags", [])[:10]:
+            normalized_tag = " ".join(
+                word
+                for word in re.findall(r"[a-zA-Z0-9]+", tag.lower())
+                if word not in STOP_WORDS and len(word) > 2
+            )
+            if normalized_tag:
+                phrase_counter[normalized_tag] += 2
+
+    keywords = [
+        phrase
+        for phrase, _count in phrase_counter.most_common(10)
+        if len(phrase.split()) > 1
+    ]
+    keywords.extend(
+        word for word, _count in keyword_counter.most_common(10) if word not in keywords
+    )
+
+    return list(dict.fromkeys(keywords))[:MAX_INTENT_KEYWORDS]
+
+
+def get_active_category_by_slug(slug: str) -> Category:
+    try:
+        return Category.objects.get(slug=slug, is_active=True)
+    except Category.DoesNotExist:
+        raise NotFound("Category not found.")
+
+
+def validate_category_region(*, category: Category, region_code: str) -> None:
+    if region_code not in category.default_regions:
+        raise ValidationError(
+            {
+                "region_code": (
+                    f"{region_code} is not enabled for {category.name}. "
+                    f"Allowed regions: {category.default_regions}."
+                )
+            }
+        )
+
+
+def collect_youtube_videos(
+    *,
+    youtube_client: YouTubeClient,
+    category: Category,
+    region_code: str,
+) -> list[dict[str, Any]]:
+    published_after = (timezone.now() - timedelta(days=14)).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    source_meta_by_video_id: dict[str, dict[str, set[str]]] = {}
+
+    popular_videos = youtube_client.fetch_most_popular_videos(
+        category_ids=category.youtube_category_ids,
+        region_code=region_code,
+    )
+    search_results = youtube_client.search_videos_by_keywords(
+        keywords=category.search_keywords,
+        category_ids=category.youtube_category_ids,
+        region_code=region_code,
+        published_after=published_after,
+    )
+
+    candidate_ids: list[str] = []
+    for video in popular_videos:
+        video_id = video.get("id")
+        if not video_id:
+            continue
+        candidate_ids.append(video_id)
+        merge_source_meta(
+            source_meta_by_video_id,
+            video_id=video_id,
+            source_type="most_popular",
+            keyword="",
+        )
+
+    for item in search_results:
+        video_id = item.get("video_id")
+        if not video_id:
+            continue
+        candidate_ids.append(video_id)
+        merge_source_meta(
+            source_meta_by_video_id,
+            video_id=video_id,
+            source_type="search",
+            keyword=item.get("_matched_keyword", ""),
+        )
+
+    detailed_videos = youtube_client.fetch_videos_by_ids(candidate_ids)
+    normalized_videos = []
+    for video in detailed_videos:
+        video_id = video.get("id")
+        if not video_id:
+            continue
+
+        source_meta = source_meta_by_video_id.get(
+            video_id,
+            {"source_types": set(), "matched_keywords": set()},
+        )
+        normalized = normalize_youtube_video(
+            video=video,
+            category=category,
+            region_code=region_code,
+            source_types=source_meta["source_types"],
+            matched_keywords=source_meta["matched_keywords"],
+        )
+        if normalized:
+            normalized_videos.append(normalized)
+
+    return normalized_videos
+
+
+def merge_source_meta(
+    source_meta_by_video_id: dict[str, dict[str, set[str]]],
+    *,
+    video_id: str,
+    source_type: str,
+    keyword: str,
+) -> None:
+    meta = source_meta_by_video_id.setdefault(
+        video_id,
+        {"source_types": set(), "matched_keywords": set()},
+    )
+    if source_type:
+        meta["source_types"].add(source_type)
+    if keyword:
+        meta["matched_keywords"].add(keyword)
+
+
+def normalize_youtube_video(
+    *,
+    video: dict[str, Any],
+    category: Category,
+    region_code: str,
+    source_types: set[str],
+    matched_keywords: set[str],
+) -> dict[str, Any] | None:
+    snippet = video.get("snippet", {})
+    statistics = video.get("statistics", {})
+    content_details = video.get("contentDetails", {})
+    title = snippet.get("title", "")
+    description = snippet.get("description", "")
+    if not is_mostly_ascii_text(title):
+        return None
+
+    text_for_filtering = f"{title} {description}".lower()
+
+    matched_keyword_list = sorted(matched_keywords)
+    if not matched_keyword_list:
+        matched_keyword_list = [
+            keyword
+            for keyword in category.search_keywords
+            if keyword.lower() in text_for_filtering
+        ]
+    if not matched_keyword_list:
+        return None
+
+    return {
+        "video_id": video.get("id"),
+        "title": title,
+        "description": description,
+        "channel_title": snippet.get("channelTitle", ""),
+        "published_at": parse_youtube_datetime(snippet.get("publishedAt")),
+        "youtube_category_id": snippet.get("categoryId", ""),
+        "view_count": parse_int(statistics.get("viewCount")),
+        "like_count": parse_int(statistics.get("likeCount")),
+        "comment_count": parse_int(statistics.get("commentCount")),
+        "duration_seconds": parse_duration_seconds(content_details.get("duration")),
+        "thumbnail_url": get_thumbnail_url(snippet),
+        "matched_keywords": matched_keyword_list,
+        "negative_keyword_hits": [
+            keyword
+            for keyword in category.negative_keywords
+            if keyword.lower() in text_for_filtering
+        ],
+        "source_types": sorted(source_types),
+        "region_code": region_code,
+    }
+
+
+def score_videos(
+    videos: list[dict[str, Any]],
+    *,
+    category: Category,
+) -> list[dict[str, Any]]:
+    scored_videos = []
+
+    for video in videos:
+        days_since_published = max(
+            (timezone.now() - video["published_at"]).total_seconds() / 86400,
+            1,
+        )
+        views_per_day = video["view_count"] / days_since_published
+        engagement_rate = (
+            (video["like_count"] + video["comment_count"]) / max(video["view_count"], 1)
+        )
+
+        views_velocity_score = min(35, int(math.log10(views_per_day + 1) * 7))
+        engagement_score = min(20, int(engagement_rate * 1000))
+        freshness_score = calculate_freshness_score(days_since_published)
+        keyword_match_score = min(15, len(video["matched_keywords"]) * 5)
+        source_strength_score = 10 if len(video["source_types"]) > 1 else 5
+        negative_keyword_penalty = min(30, len(video["negative_keyword_hits"]) * 10)
+
+        trend_score = max(
+            0,
+            min(
+                100,
+                views_velocity_score
+                + engagement_score
+                + freshness_score
+                + keyword_match_score
+                + source_strength_score
+                - negative_keyword_penalty,
+            ),
+        )
+        video["trend_score"] = trend_score
+        video["trend_reasons"] = build_trend_reasons(
+            video=video,
+            views_per_day=views_per_day,
+            engagement_rate=engagement_rate,
+        )
+        scored_videos.append(video)
+
+    return sorted(scored_videos, key=lambda item: item["trend_score"], reverse=True)
+
+
+def calculate_freshness_score(days_since_published: float) -> int:
+    if days_since_published <= 3:
+        return 20
+    if days_since_published <= 7:
+        return 15
+    if days_since_published <= 14:
+        return 10
+    return 3
+
+
+def build_trend_reasons(
+    *,
+    video: dict[str, Any],
+    views_per_day: float,
+    engagement_rate: float,
+) -> list[str]:
+    reasons = [
+        f"{int(views_per_day):,} views per day",
+        f"{engagement_rate:.2%} engagement rate",
+    ]
+    if video["matched_keywords"]:
+        reasons.append(f"Matched keywords: {', '.join(video['matched_keywords'][:3])}")
+    if len(video["source_types"]) > 1:
+        reasons.append("Found in both popular and niche search signals")
+    return reasons
+
+
+def cluster_videos(
+    videos: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    clusters_by_key: dict[str, dict[str, Any]] = {}
+
+    for video in videos:
+        cluster_key = get_cluster_key(video)
+        cluster = clusters_by_key.setdefault(
+            cluster_key,
+            {
+                "cluster_key": cluster_key,
+                "cluster_title": cluster_key.replace("-", " ").title(),
+                "trend_score": 0,
+                "evidence_video_ids": [],
+                "evidence_titles": [],
+                "trend_reasons": [],
+            },
+        )
+        cluster["trend_score"] = max(cluster["trend_score"], video["trend_score"])
+        cluster["evidence_video_ids"].append(video["video_id"])
+        cluster["evidence_titles"].append(video["title"])
+        cluster["trend_reasons"].extend(video["trend_reasons"])
+
+    clusters = sorted(
+        clusters_by_key.values(),
+        key=lambda item: item["trend_score"],
+        reverse=True,
+    )
+
+    for cluster in clusters:
+        cluster["evidence_video_ids"] = cluster["evidence_video_ids"][:5]
+        cluster["evidence_titles"] = cluster["evidence_titles"][:5]
+        cluster["trend_reasons"] = list(dict.fromkeys(cluster["trend_reasons"]))[:5]
+
+    return clusters[:limit]
+
+
+def get_cluster_key(video: dict[str, Any]) -> str:
+    if video["matched_keywords"]:
+        return slugify_phrase(video["matched_keywords"][0])
+
+    words = [
+        word
+        for word in re.findall(r"[a-zA-Z0-9]+", video["title"].lower())
+        if word not in STOP_WORDS and len(word) > 2
+    ]
+    if not words:
+        return "general-trend"
+    return slugify_phrase(" ".join(words[:3]))
+
+
+def generate_ideas_with_groq(
+    *,
+    category: Category,
+    region_code: str,
+    clusters: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not clusters:
+        raise ValidationError({"clusters": "No trend clusters were found."})
+
+    system_prompt = """
+You generate honest, specific YouTube video idea candidates for small and medium creators.
+Return strict JSON with one top-level key: ideas.
+ideas must be an array of objects with:
+title, why_now, audience_promise, suggested_format, difficulty, freshness, risk_flags, evidence_video_ids.
+
+Title rules:
+- Write YouTube-ready video ideas, not essay topics.
+- Use concrete formats like "I Tested...", "7 ...", "How I Would...", "X vs Y", "What Happened When...".
+- Mention a concrete object, workflow, tool, audience, result, or constraint.
+- Do not copy source titles exactly.
+- Do not quote source titles inside why_now; summarize aggregate signals instead.
+- Do not use vague titles starting with "Exploring", "The Future of", "The Impact of", or "Opportunities and Challenges".
+- Do not invent fake guarantees, income promises, medical claims, or manipulative clickbait.
+
+why_now rules:
+- Explain the trend using the evidence cluster.
+- Do not say only "is gaining popularity" or "is becoming important".
+- Do not mention raw evidence titles.
+- Mention recent YouTube signals, views, comments, repeated topic patterns, or search interest.
+
+difficulty must be EASY, MEDIUM, or HARD.
+freshness must be LOW, MEDIUM, or HIGH.
+""".strip()
+    user_payload = {
+        "niche": category.name,
+        "region_code": region_code,
+        "max_ideas": limit,
+        "clusters": clusters,
+        "quality_rules": [
+            "Create practical ideas a small or medium creator can make.",
+            "Base each idea on the evidence cluster.",
+            "Do not promise guaranteed income, health results, or impossible outcomes.",
+            "Do not copy any evidence title exactly.",
+            "Prefer test, comparison, tutorial, teardown, case study, or checklist formats.",
+            "Reject vague essay topics like impact, future, opportunities, challenges, and daily life.",
+        ],
+        "good_title_examples": [
+            "I Tested 5 AI Agents That Can Automate Creator Workflows",
+            "7 ChatGPT Workflows That Save Small Creators Time",
+            "AI Automation Tools I Would Actually Use This Week",
+            "ChatGPT vs AI Agents: Which One Helps Creators More?",
+        ],
+        "bad_title_examples": [
+            "Exploring ChatGPT's Impact on Daily Life",
+            "The Future of AI Agents: Opportunities and Challenges",
+            "Automating Repetitive Tasks with AI",
+        ],
+    }
+
+    generated = GroqClient().generate_json(
+        system_prompt=system_prompt,
+        user_payload=user_payload,
+    )
+    ideas = generated.get("ideas", []) if isinstance(generated, dict) else []
+    validated_ideas = validate_generated_ideas(
+        ideas=ideas,
+        clusters=clusters,
+        region_code=region_code,
+        limit=limit,
+    )
+
+    if len(validated_ideas) < limit:
+        validated_ideas = fill_missing_ideas_from_clusters(
+            ideas=validated_ideas,
+            clusters=clusters,
+            region_code=region_code,
+            limit=limit,
+        )
+
+    return validated_ideas
+
+
+def validate_generated_ideas(
+    *,
+    ideas: list[dict[str, Any]],
+    clusters: list[dict[str, Any]],
+    region_code: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    evidence_titles = {
+        title.strip().lower()
+        for cluster in clusters
+        for title in cluster.get("evidence_titles", [])
+    }
+    evidence_ids = {
+        video_id
+        for cluster in clusters
+        for video_id in cluster.get("evidence_video_ids", [])
+    }
+    cluster_by_evidence_id = {
+        video_id: cluster
+        for cluster in clusters
+        for video_id in cluster.get("evidence_video_ids", [])
+    }
+    valid_ideas = []
+
+    for idea in ideas:
+        title = str(idea.get("title", "")).strip()
+        if (
+            not title
+            or title.lower() in evidence_titles
+            or is_vague_title(title)
+            or not looks_like_creator_video_idea(title)
+        ):
+            continue
+
+        idea_evidence_ids = [
+            video_id
+            for video_id in idea.get("evidence_video_ids", [])
+            if video_id in evidence_ids
+        ]
+        if not idea_evidence_ids:
+            idea_evidence_ids = clusters[len(valid_ideas) % len(clusters)][
+                "evidence_video_ids"
+            ]
+
+        first_cluster = cluster_by_evidence_id.get(idea_evidence_ids[0], clusters[0])
+        idea_evidence_ids = idea_evidence_ids[:5]
+        why_now = str(idea.get("why_now", "")).strip()
+        if (
+            is_weak_why_now(why_now)
+            or contains_non_ascii(why_now)
+            or mentions_evidence_title(why_now, first_cluster)
+        ):
+            why_now = build_evidence_why_now(first_cluster)
+
+        audience_promise = str(idea.get("audience_promise", "")).strip()
+        if not audience_promise:
+            audience_promise = build_default_audience_promise(first_cluster)
+
+        source_signal = build_source_signal(
+            evidence_count=len(idea_evidence_ids),
+            region_code=region_code,
+        )
+        valid_ideas.append(
+            {
+                "title": title[:255],
+                "why_now": why_now,
+                "audience_promise": audience_promise,
+                "suggested_format": str(
+                    idea.get("suggested_format", "Explainer")
+                ).strip()[:80],
+                "difficulty": normalize_choice(
+                    idea.get("difficulty"),
+                    IdeaCandidate.Difficulty.values,
+                    IdeaCandidate.Difficulty.MEDIUM,
+                ),
+                "freshness": normalize_choice(
+                    idea.get("freshness"),
+                    IdeaCandidate.Freshness.values,
+                    IdeaCandidate.Freshness.MEDIUM,
+                ),
+                "trend_score": first_cluster["trend_score"],
+                "source_signal": source_signal,
+                "evidence_video_ids": idea_evidence_ids,
+                "risk_flags": normalize_string_list(idea.get("risk_flags", [])),
+            }
+        )
+
+        if len(valid_ideas) >= limit:
+            break
+
+    return valid_ideas
+
+
+def fill_missing_ideas_from_clusters(
+    *,
+    ideas: list[dict[str, Any]],
+    clusters: list[dict[str, Any]],
+    region_code: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    existing_titles = {idea["title"].lower() for idea in ideas}
+
+    for cluster in clusters:
+        if len(ideas) >= limit:
+            break
+
+        fallback_idea = build_fallback_idea_from_cluster(
+            cluster,
+            region_code=region_code,
+        )
+        if fallback_idea["title"].lower() in existing_titles:
+            continue
+
+        ideas.append(fallback_idea)
+        existing_titles.add(fallback_idea["title"].lower())
+
+    if not ideas:
+        raise ValidationError({"groq_response": "No valid idea candidates were created."})
+
+    return ideas
+
+
+def build_fallback_idea_from_cluster(
+    cluster: dict[str, Any],
+    *,
+    region_code: str,
+) -> dict[str, Any]:
+    topic = humanize_cluster_topic(cluster)
+    evidence_video_ids = cluster.get("evidence_video_ids", [])[:5]
+
+    if "agent" in topic.lower():
+        title = f"I Tested AI Agents That Can Automate Creator Tasks"
+        suggested_format = "Test / workflow"
+    elif "chatgpt" in topic.lower():
+        title = f"7 ChatGPT Workflows Small Creators Can Use This Week"
+        suggested_format = "Tutorial / checklist"
+    elif "tool" in topic.lower():
+        title = f"I Tested {topic} So Creators Know What Actually Works"
+        suggested_format = "Test / comparison"
+    else:
+        title = f"How I Would Use {topic} for a Real Creator Workflow"
+        suggested_format = "Tutorial / case study"
+
+    return {
+        "title": title[:255],
+        "why_now": build_evidence_why_now(cluster),
+        "audience_promise": build_default_audience_promise(cluster),
+        "suggested_format": suggested_format,
+        "difficulty": IdeaCandidate.Difficulty.MEDIUM,
+        "freshness": IdeaCandidate.Freshness.HIGH,
+        "trend_score": cluster["trend_score"],
+        "source_signal": build_source_signal(
+            evidence_count=len(evidence_video_ids),
+            region_code=region_code,
+        ),
+        "evidence_video_ids": evidence_video_ids,
+        "risk_flags": [],
+    }
+
+
+def humanize_cluster_topic(cluster: dict[str, Any]) -> str:
+    cluster_title = str(cluster.get("cluster_title", "")).strip()
+    if cluster_title and cluster_title.lower() != "general trend":
+        return cluster_title
+    cluster_key = str(cluster.get("cluster_key", "")).replace("-", " ").strip()
+    return cluster_key.title() if cluster_key else "This Trend"
+
+
+def build_evidence_why_now(cluster: dict[str, Any]) -> str:
+    trend_reasons = cluster.get("trend_reasons", [])
+    if trend_reasons:
+        return (
+            "Recent US YouTube videos in this topic show measurable traction: "
+            f"{'; '.join(trend_reasons[:2])}."
+        )
+    return "Recent US YouTube videos are repeatedly covering this topic with strong trend signals."
+
+
+def build_default_audience_promise(cluster: dict[str, Any]) -> str:
+    topic = humanize_cluster_topic(cluster).lower()
+    return f"Help viewers understand which {topic} ideas are practical enough to try now."
+
+
+def build_source_signal(*, evidence_count: int, region_code: str) -> str:
+    if evidence_count == 1:
+        return f"Based on 1 recent {region_code} YouTube trend signal"
+    return f"Based on {evidence_count} recent {region_code} YouTube trend signals"
+
+
+def is_vague_title(title: str) -> bool:
+    title_lower = title.lower()
+    return any(phrase in title_lower for phrase in BANNED_TITLE_PHRASES)
+
+
+def looks_like_creator_video_idea(title: str) -> bool:
+    title_lower = title.lower()
+    creator_markers = (
+        "i tested",
+        "tested",
+        "how ",
+        "what happened",
+        "vs",
+        "tools",
+        "workflow",
+        "workflows",
+        "checklist",
+        "guide",
+        "tutorial",
+        "mistakes",
+        "for creators",
+        "small creators",
+    )
+    has_number = bool(re.search(r"\d+", title))
+    has_marker = any(marker in title_lower for marker in creator_markers)
+    return has_number or has_marker
+
+
+def is_weak_why_now(why_now: str) -> bool:
+    if not why_now:
+        return True
+    why_now_lower = why_now.lower()
+    return any(phrase in why_now_lower for phrase in WEAK_WHY_NOW_PHRASES)
+
+
+def mentions_evidence_title(why_now: str, cluster: dict[str, Any]) -> bool:
+    why_now_lower = why_now.lower()
+    for title in cluster.get("evidence_titles", []):
+        title_lower = str(title).strip().lower()
+        if title_lower and title_lower in why_now_lower:
+            return True
+    return False
+
+
+def contains_non_ascii(value: str) -> bool:
+    return any(ord(character) > 127 for character in value)
+
+
+def is_mostly_ascii_text(value: str) -> bool:
+    if not value:
+        return False
+    ascii_count = sum(1 for character in value if ord(character) < 128)
+    return ascii_count / len(value) >= 0.9
+
+
+def normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def save_idea_candidates(
+    *,
+    category: Category,
+    region_code: str,
+    ideas: list[dict[str, Any]],
+    source_video_count: int,
+) -> list[IdeaCandidate]:
+    batch_id = uuid.uuid4()
+    expires_at = timezone.now() + timedelta(hours=12)
+
+    with transaction.atomic():
+        IdeaCandidate.objects.filter(
+            category=category,
+            region_code=region_code,
+            is_active=True,
+        ).update(is_active=False)
+
+        idea_candidates = [
+            IdeaCandidate(
+                category=category,
+                batch_id=batch_id,
+                region_code=region_code,
+                title=idea["title"],
+                why_now=idea["why_now"],
+                audience_promise=idea["audience_promise"],
+                suggested_format=idea["suggested_format"],
+                difficulty=idea["difficulty"],
+                freshness=idea["freshness"],
+                trend_score=idea["trend_score"],
+                source_signal=idea["source_signal"],
+                source_video_count=source_video_count,
+                evidence_video_ids=idea["evidence_video_ids"],
+                risk_flags=idea["risk_flags"],
+                is_active=True,
+                expires_at=expires_at,
+            )
+            for idea in ideas
+        ]
+        return list(IdeaCandidate.objects.bulk_create(idea_candidates))
+
+
+def parse_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_youtube_datetime(value: str | None):
+    if not value:
+        return timezone.now()
+    return timezone.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def parse_duration_seconds(value: str | None) -> int:
+    if not value:
+        return 0
+
+    match = re.fullmatch(
+        r"P(?:(?P<days>\d+)D)?T?(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?",
+        value,
+    )
+    if not match:
+        return 0
+
+    parts = {key: parse_int(val) for key, val in match.groupdict().items()}
+    return (
+        parts["days"] * 86400
+        + parts["hours"] * 3600
+        + parts["minutes"] * 60
+        + parts["seconds"]
+    )
+
+
+def get_thumbnail_url(snippet: dict[str, Any]) -> str:
+    thumbnails = snippet.get("thumbnails", {})
+    for key in ("maxres", "standard", "high", "medium", "default"):
+        url = thumbnails.get(key, {}).get("url")
+        if url:
+            return url
+    return ""
+
+
+def slugify_phrase(value: str) -> str:
+    words = re.findall(r"[a-zA-Z0-9]+", value.lower())
+    return "-".join(words[:5]) or "general-trend"
+
+
+def normalize_choice(value: Any, allowed_values: list[str], default: str) -> str:
+    value = str(value or "").upper()
+    return value if value in allowed_values else default
