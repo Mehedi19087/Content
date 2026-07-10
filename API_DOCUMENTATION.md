@@ -4,9 +4,12 @@
 
 A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. It helps YouTube content creators generate SEO metadata, trending video ideas, and thumbnail concepts using Groq LLM and OpenAI DALL-E.
 
-**Base URL:** ``
+**Base URL:** `https://api.creatorintent.com/api/`
 
-**Authentication:** None (all endpoints are public)
+**Authentication:** 
+* **JSON Web Token (JWT) Authentication** is required for all data endpoints (Categories and Ideas).
+* Requests to data endpoints must include the following header: `Authorization: Bearer <access_token>`
+* Public endpoints (authentication not required) are marked with `(Public)`.
 
 ---
 
@@ -14,16 +17,20 @@ A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. 
 
 | # | Method | Endpoint | Description |
 |---|--------|----------|-------------|
-| 1 | `GET` | `categories/` | List all categories |
-| 2 | `POST` | `categories/` | Create a category |
-| 3 | `GET` | `categories/<id>/` | Get category by ID |
-| 4 | `PUT` | `categories/<id>/` | Update category |
-| 5 | `DELETE` | `categories/<id>/` | Delete category |
-| 6 | `GET` | `ideas/trending/` | Get trending ideas |
-| 7 | `POST` | `ideas/refresh/` | Refresh ideas for a category |
-| 8 | `POST` | `ideas/youtube-intent/` | Research YouTube intent |
-| 9 | `POST` | `ideas/thumbnail-preparation/` | Prepare thumbnail hooks |
-| 10 | `POST` | `ideas/generate-package/` | Generate final content package |
+| 1 | `GET` | `auth/google/auth-url/` | Get Google login URL (Public) |
+| 2 | `GET` | `auth/google/callback/` | Google login callback (Public) |
+| 3 | `POST` | `auth/reviewer-login/` | App Store Reviewer Login (Public) |
+| 4 | `GET/PATCH/DELETE` | `auth/profile/` | Manage User Profile (Authenticated) |
+| 5 | `GET` | `categories/` | List all categories (Authenticated) |
+| 6 | `POST` | `categories/` | Create a category (Authenticated) |
+| 7 | `GET` | `categories/<id>/` | Get category by ID (Authenticated) |
+| 8 | `PUT` | `categories/<id>/` | Update category (Authenticated) |
+| 9 | `DELETE` | `categories/<id>/` | Delete category (Authenticated) |
+| 10 | `GET` | `ideas/trending/` | Get trending ideas (Authenticated) |
+| 11 | `POST` | `ideas/refresh/` | Refresh ideas for a category (Authenticated) |
+| 12 | `POST` | `ideas/youtube-intent/` | Research YouTube intent (Authenticated) |
+| 13 | `POST` | `ideas/thumbnail-preparation/` | Prepare thumbnail hooks (Authenticated) |
+| 14 | `POST` | `ideas/generate-package/` | Generate final content package (Authenticated) |
 
 ---
 
