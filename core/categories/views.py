@@ -12,8 +12,11 @@ from .services import (
     update_category,
     delete_category
 )
+from users.permissions import HasCategoryWritePermission
 
 class CreateListCategoryAPIView(APIView):
+    permission_classes = [HasCategoryWritePermission]
+
     def get(self, request):
         # Retrieve all categories and serialize them
         categories = get_categories()
@@ -53,6 +56,8 @@ class CreateListCategoryAPIView(APIView):
 
 
 class CategoryDetailAPIView(APIView):
+    permission_classes = [HasCategoryWritePermission]
+
     def get(self, request, pk):
         # Retrieve a single category by ID
         category = get_category_by_id(pk)

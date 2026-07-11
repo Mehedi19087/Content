@@ -21,9 +21,12 @@ from .services import (
     refresh_ideas_for_category,
     research_youtube_intent_for_idea,
 )
+from users.permissions import HasIdeaWritePermission
 
 
 class TrendingIdeasAPIView(APIView):
+    permission_classes = [HasIdeaWritePermission]
+
     def get(self, request):
         serializer = TrendingIdeaQuerySerializer(data=request.query_params)
         serializer.is_valid(raise_exception=True)
@@ -41,6 +44,8 @@ class TrendingIdeasAPIView(APIView):
 
 
 class RefreshIdeasAPIView(APIView):
+    permission_classes = [HasIdeaWritePermission]
+
     def post(self, request):
         serializer = RefreshIdeasSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -68,6 +73,8 @@ class RefreshIdeasAPIView(APIView):
 
 
 class YouTubeIntentResearchAPIView(APIView):
+    permission_classes = [HasIdeaWritePermission]
+
     def post(self, request):
         serializer = YouTubeIntentResearchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -95,6 +102,8 @@ class YouTubeIntentResearchAPIView(APIView):
 
 
 class ThumbnailPreparationAPIView(APIView):
+    permission_classes = [HasIdeaWritePermission]
+
     def post(self, request):
         serializer = ThumbnailPreparationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -122,6 +131,8 @@ class ThumbnailPreparationAPIView(APIView):
 
 
 class GeneratePackageAPIView(APIView):
+    permission_classes = [HasIdeaWritePermission]
+
     def post(self, request):
         serializer = GeneratePackageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
