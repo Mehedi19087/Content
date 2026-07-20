@@ -24,6 +24,7 @@ urlpatterns = [
     path('api/', include('categories.urls')),
     path('api/', include('ideas.urls')),
     path('api/auth/', include('users.urls')),
+    path('api/', include('youtube_channels.urls')),
 ]
 
 if settings.DEBUG:

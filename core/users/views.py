@@ -376,6 +376,13 @@ class UserProfileView(APIView):
 
         logger.info("Account deletion initiated | user_id=%s", user_id)
 
+        # Revoke connected YouTube access and remove its authorized data first.
+        from youtube_channels.models import YouTubeChannel
+        from youtube_channels.services import disconnect_youtube_channel
+
+        if YouTubeChannel.objects.filter(user_id=user_id).exists():
+            disconnect_youtube_channel(user_id=user_id)
+
         with transaction.atomic():
             user.delete()
 

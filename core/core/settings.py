@@ -29,7 +29,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-ty9+kkt1l$39@-kul@_p@=t_#--nt+jjyd6pc4!@y22u_bi$g%'
+SECRET_KEY = os.getenv(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-ty9+kkt1l$39@-kul@_p@=t_#--nt+jjyd6pc4!@y22u_bi$g%',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DJANGO_DEBUG', 'False').lower() == 'true'
@@ -50,6 +53,7 @@ INSTALLED_APPS = [
     'categories',
     'ideas',
     'users',
+    'youtube_channels',
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -201,6 +205,15 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY', '')
+YOUTUBE_OAUTH_REDIRECT_URI = os.getenv('YOUTUBE_OAUTH_REDIRECT_URI', '')
+FRONTEND_YOUTUBE_REDIRECT_URL = os.getenv('FRONTEND_YOUTUBE_REDIRECT_URL', '')
+YOUTUBE_TOKEN_ENCRYPTION_KEY = os.getenv('YOUTUBE_TOKEN_ENCRYPTION_KEY', '')
+YOUTUBE_ANALYSIS_DAYS = int(os.getenv('YOUTUBE_ANALYSIS_DAYS', '90'))
+YOUTUBE_ANALYSIS_MAX_VIDEOS = int(os.getenv('YOUTUBE_ANALYSIS_MAX_VIDEOS', '30'))
+YOUTUBE_ANALYSIS_MIN_VIDEOS = int(os.getenv('YOUTUBE_ANALYSIS_MIN_VIDEOS', '10'))
+YOUTUBE_ANALYSIS_REFRESH_MINUTES = int(
+    os.getenv('YOUTUBE_ANALYSIS_REFRESH_MINUTES', '60')
+)
 GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 GROQ_MODEL = os.getenv('GROQ_MODEL', 'llama-3.1-8b-instant')
 GROQ_TIMEOUT_SECONDS = int(os.getenv('GROQ_TIMEOUT_SECONDS', '30'))
