@@ -78,7 +78,7 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         'CORS_ALLOWED_ORIGINS',
-        'https://creator-intent.lovable.app',
+        'https://creatorintent.com,https://www.creatorintent.com,https://creator-intent.lovable.app',
     ).split(',')
     if origin.strip()
 ]
