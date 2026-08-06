@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -8,9 +10,22 @@ from categories.models import Category
 from .models import IdeaCandidate
 from .services import validate_generated_ideas
 
+User = get_user_model()
+
 
 class IdeasAPITestCase(APITestCase):
     def setUp(self):
+        # A Creator-tier user is at the top of the cumulative hierarchy
+        # (Creator > Pro > Starter), so they can exercise every endpoint.
+        self.user = User.objects.create_user(
+            username="creator",
+            email="creator@example.com",
+            password="secret123",
+        )
+        creator_group, _ = Group.objects.get_or_create(name="Creator Users")
+        self.user.groups.add(creator_group)
+        self.client.force_authenticate(user=self.user)
+
         self.category = Category.objects.create(
             name="AI & Automation",
             slug="ai-automation",

@@ -5,7 +5,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from chat.models import ChatMessage, ChatSession, PlanProgress, ProblemCategory, UserPlan
-from .views import _decode_oauth_state
+from .oauth_utils import decode_oauth_state
 
 User = get_user_model()
 
@@ -32,7 +32,7 @@ class GoogleOAuthFlowTests(TestCase):
         self.assertIn("redirect_uri=https%3A%2F%2Fapi.example.com%2Fapi%2Fgoogle%2Fcallback%2F", auth_url)
 
         state_value = auth_url.split("state=", 1)[1].split("&", 1)[0]
-        decoded = _decode_oauth_state(state_value)
+        decoded = decode_oauth_state(state_value)
         self.assertEqual(decoded["platform"], "mobile")
         self.assertTrue(decoded.get("nonce"))
 

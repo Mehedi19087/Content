@@ -322,6 +322,10 @@ class YouTubeAPITests(APITestCase):
             email="api@example.com",
             password="secret123",
         )
+        # Connect/analyze/analyze/disconnect now require Pro tier (pricing matrix).
+        from django.contrib.auth.models import Group
+        pro_group, _ = Group.objects.get_or_create(name="Pro Users")
+        self.user.groups.add(pro_group)
         self.client.force_authenticate(user=self.user)
 
     @patch("youtube_channels.views.build_youtube_connect_url")

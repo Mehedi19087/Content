@@ -1,17 +1,12 @@
-import hashlib
-import json
 import logging
 import os
 import secrets
-from urllib.parse import parse_qsl
+
 import requests
-from urllib.parse import urlencode
-from base64 import urlsafe_b64decode, urlsafe_b64encode
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.http import HttpResponse
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.decorators import method_decorator
@@ -23,17 +18,18 @@ from rest_framework_simplejwt.settings import api_settings as jwt_api_settings
 from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .oauth_utils import (
+    SUPPORTED_AUTH_PLATFORMS,
+    build_redirect_url,
+    decode_oauth_state,
+    encode_oauth_state,
+    fingerprint,
+    mobile_deep_link_response,
+)
 from .serializers import UserSerializer
 
 User = get_user_model()
 logger = logging.getLogger("users.views")
-SUPPORTED_AUTH_PLATFORMS = {"web", "mobile"}
-
-
-def _fingerprint(value):
-    if not value:
-        return "missing"
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
 
 
 def _error_response(message, status_code=status.HTTP_400_BAD_REQUEST, extra=None):
@@ -41,56 +37,6 @@ def _error_response(message, status_code=status.HTTP_400_BAD_REQUEST, extra=None
     if extra:
         payload.update(extra)
     return Response(payload, status=status_code)
-
-
-def _encode_oauth_state(platform: str) -> str:
-    payload = {
-        "nonce": secrets.token_urlsafe(32),
-        "platform": platform if platform in SUPPORTED_AUTH_PLATFORMS else "web",
-    }
-    encoded = urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
-    return encoded.rstrip("=")
-
-
-def _decode_oauth_state(state: str | None) -> dict:
-    if not state:
-        return {"platform": "web"}
-
-    try:
-        padded_state = state + "=" * (-len(state) % 4)
-        decoded = urlsafe_b64decode(padded_state.encode("utf-8")).decode("utf-8")
-        payload = json.loads(decoded)
-        platform = payload.get("platform", "web")
-        if platform not in SUPPORTED_AUTH_PLATFORMS:
-            platform = "web"
-        payload["platform"] = platform
-        return payload
-    except Exception:
-        logger.warning("Failed to decode OAuth state, defaulting to web flow")
-        return {"platform": "web"}
-
-
-def _build_redirect_url(base_url: str, access_token: str, refresh_token: str) -> str:
-    redirect_url_parts = base_url.split("#", 1)
-    base_part = redirect_url_parts[0]
-    hash_part = f"#{redirect_url_parts[1]}" if len(redirect_url_parts) > 1 else ""
-
-    query_parts = base_part.split("?", 1)
-    redirect_base = query_parts[0]
-    existing_params = dict(parse_qsl(query_parts[1])) if len(query_parts) > 1 else {}
-
-    existing_params.update({
-        "access": access_token,
-        "refresh": refresh_token,
-    })
-
-    return f"{redirect_base}?{urlencode(existing_params)}{hash_part}"
-
-
-def _mobile_deep_link_response(final_redirect: str) -> HttpResponse:
-    response = HttpResponse(status=302)
-    response["Location"] = final_redirect
-    return response
 
 @method_decorator(xframe_options_exempt, name="dispatch")
 class GoogleAuthURLView(APIView):
@@ -111,7 +57,7 @@ class GoogleAuthURLView(APIView):
         if not google_client_id:
             return Response({"error": "GOOGLE_CLIENT_ID missing"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        state = _encode_oauth_state(platform)
+        state = encode_oauth_state(platform)
         params = {
             "client_id": google_client_id,
             "redirect_uri": redirect_uri,
@@ -134,7 +80,7 @@ class GoogleCallbackView(APIView):
     def get(self, request):
         logger.info("Google callback initiated")
         code = request.GET.get("code")
-        state_payload = _decode_oauth_state(request.GET.get("state"))
+        state_payload = decode_oauth_state(request.GET.get("state"))
         platform = state_payload.get("platform", "web")
 
         if not code:
@@ -281,22 +227,22 @@ class GoogleCallbackView(APIView):
             validated_access.get("exp"),
             refresh.get("exp"),
             validated_access.get(jwt_api_settings.USER_ID_CLAIM),
-            _fingerprint(settings.SIMPLE_JWT.get("SIGNING_KEY")),
-            _fingerprint(settings.SECRET_KEY),
+            fingerprint(settings.SIMPLE_JWT.get("SIGNING_KEY")),
+            fingerprint(settings.SECRET_KEY),
             settings.SIMPLE_JWT.get("ACCESS_TOKEN_LIFETIME"),
             settings.SIMPLE_JWT.get("REFRESH_TOKEN_LIFETIME"),
         )
 
         redirect_target = mobile_redirect if platform == "mobile" else frontend_redirect
         if redirect_target:
-            final_redirect = _build_redirect_url(
+            final_redirect = build_redirect_url(
                 redirect_target,
                 access_token=str(access_token),
                 refresh_token=str(refresh),
             )
             logger.info("Redirecting after Google login | platform=%s | target=%s", platform, final_redirect)
             if platform == "mobile":
-                return _mobile_deep_link_response(final_redirect)
+                return mobile_deep_link_response(final_redirect)
             return redirect(final_redirect)
 
         return Response({

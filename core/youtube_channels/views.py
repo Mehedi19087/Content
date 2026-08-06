@@ -22,9 +22,12 @@ from .services import (
     get_youtube_analysis,
     get_youtube_channel,
 )
+from users.permissions import HasProPermission
 
 
 class YouTubeConnectAPIView(APIView):
+    permission_classes = [HasProPermission]
+
     def get(self, request):
         try:
             auth_url = build_youtube_connect_url(
@@ -85,6 +88,8 @@ class YouTubeCallbackAPIView(APIView):
 
 
 class YouTubeChannelAPIView(APIView):
+    permission_classes = [HasProPermission]
+
     def get(self, request):
         channel = get_youtube_channel(user_id=request.user.id)
         serializer = ResponseYouTubeChannelSerializer(channel)
@@ -98,6 +103,8 @@ class YouTubeChannelAPIView(APIView):
 
 
 class AnalyzeYouTubeChannelAPIView(APIView):
+    permission_classes = [HasProPermission]
+
     def post(self, request):
         serializer = AnalyzeYouTubeChannelSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -128,6 +135,8 @@ class AnalyzeYouTubeChannelAPIView(APIView):
 
 
 class YouTubeAnalysisAPIView(APIView):
+    permission_classes = [HasProPermission]
+
     def get(self, request):
         analysis = get_youtube_analysis(user_id=request.user.id)
         serializer = ResponseYouTubeAnalysisSerializer(analysis)
@@ -141,6 +150,8 @@ class YouTubeAnalysisAPIView(APIView):
 
 
 class YouTubeDisconnectAPIView(APIView):
+    permission_classes = [HasProPermission]
+
     def delete(self, request):
         disconnect_youtube_channel(user_id=request.user.id)
         return Response(

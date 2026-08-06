@@ -31,6 +31,12 @@ A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. 
 | 12 | `POST` | `ideas/youtube-intent/` | Research YouTube intent (Authenticated) |
 | 13 | `POST` | `ideas/thumbnail-preparation/` | Prepare thumbnail hooks (Authenticated) |
 | 14 | `POST` | `ideas/generate-package/` | Generate final content package (Authenticated) |
+| 15 | `GET` | `billing/plans/` | List purchasable plans (Authenticated) |
+| 16 | `POST` | `billing/checkout/` | Get Lemon Squeezy hosted checkout URL (Authenticated) |
+| 17 | `GET` | `billing/status/` | Get current user's subscription status (Authenticated) |
+| 18 | `POST` | `billing/portal/` | Get Lemon Squeezy customer portal URL (Authenticated) |
+| 19 | `POST` | `billing/cancel/` | Cancel subscription at period end (Authenticated) |
+| 20 | `POST` | `billing/webhook/` | Lemon Squeezy webhook receiver (Public) |
 
 ---
 
@@ -595,6 +601,7 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
 | YouTube Data API v3 | Fetch trending videos, search results | `youtube_client.py` |
 | Groq LLM | Generate video ideas, intent analysis, package plans | `groq_client.py` |
 | OpenAI DALL-E 3 | Generate thumbnail images | `openai_image_client.py` |
+| Lemon Squeezy | Subscription billing, customer portal, webhooks | `billing/client.py` |
 
 ---
 
@@ -608,3 +615,164 @@ The typical API usage follows this sequence:
 4. **Research Intent** - `POST ideas/youtube-intent/` (analyze a specific idea)
 5. **Prepare Thumbnail** - `POST ideas/thumbnail-preparation/` (generate hook cards and subject plans)
 6. **Generate Package** - `POST ideas/generate-package/` (create final thumbnail + SEO + edit options)
+
+---
+
+## 11. Billing (Lemon Squeezy)
+
+Entitlement is group-based: each Plan maps to a Django auth Group, and the user is added/removed from that Group by `billing.services.recompute_user_entitlement()` based on the state of their `Subscription` rows. Tiers are cumulative — a Creator-tier user unlocks all lower-tier features too.
+
+| Tier (Group) | Unlocks |
+|---|---|
+| Free Users | `GET ideas/trending/` |
+| Starter Users | + `POST ideas/refresh/`, `POST ideas/youtube-intent/` |
+| Pro Users | + `POST ideas/thumbnail-preparation/`, all `youtube/*` endpoints |
+| Creator Users | + `POST ideas/generate-package/` |
+
+### 11.1 GET `billing/plans/`
+
+List all active purchasable plans, ordered by `sort_order`.
+
+**Response (200):**
+
+```json
+{
+  "message": "plans retrieved successfully",
+  "data": [
+    {
+      "id": 1,
+      "slug": "starter",
+      "name": "Starter",
+      "description": "Generate fresh trending ideas and YouTube intent research.",
+      "group": "Starter Users",
+      "price_usd_cents": 1900,
+      "interval": "month",
+      "is_active": true,
+      "sort_order": 1
+    }
+  ]
+}
+```
+
+### 11.2 POST `billing/checkout/`
+
+Returns a Lemon Squeezy hosted checkout URL. The user is redirected to LS to pay; LS redirects back to your success URL after payment, then sends a webhook so the backend grants the entitlement.
+
+**Request:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `plan_slug` | string | Yes | — | Plan slug |
+| `platform` | string | No | `"web"` | `web` or `mobile` (selects success redirect target) |
+
+```json
+{
+  "plan_slug": "pro",
+  "platform": "web"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "checkout url generated successfully",
+  "data": {
+    "checkout_url": "https://checkout.lemonsqueezy.com/..."
+  }
+}
+```
+
+**Error (404):** Plan slug not found.
+**Error (503):** `LEMON_SQUEEZY_API_KEY` missing.
+**Error (502):** LS call failed.
+
+### 11.3 GET `billing/status/`
+
+Returns the caller's current subscription state. Always calls `recompute_user_entitlement()` first, so this endpoint self-heals any drift between LS and your database.
+
+**Response (200):**
+
+```json
+{
+  "message": "billing status retrieved successfully",
+  "data": {
+    "plan": "pro",
+    "plan_name": "Pro",
+    "group": "Pro Users",
+    "status": "active",
+    "current_period_end": "2026-08-31T10:00:00Z",
+    "cancelled_at": null,
+    "lemon_subscription_id": "sub_abc"
+  }
+}
+```
+
+If the user has no paid subscription, `plan`, `plan_name`, `status`, `current_period_end`, `cancelled_at`, `lemon_subscription_id` are all `null`, and `group` is `"Free Users"`.
+
+### 11.4 POST `billing/portal/`
+
+Returns a one-time Lemon Squeezy customer portal URL the user can use to update their card or see invoices. No request body required.
+
+**Response (200):**
+
+```json
+{
+  "message": "portal url generated successfully",
+  "data": {
+    "portal_url": "https://app.lemonsqueezy.com/portal/..."
+  }
+}
+```
+
+**Error (404):** No subscription exists for this user.
+**Error (503):** `LEMON_SQUEEZY_API_KEY` missing.
+
+### 11.5 POST `billing/cancel/`
+
+Cancels the user's subscription at period end. The user keeps their paid-tier access until `current_period_end` because `recompute_user_entitlement()` still treats a `CANCELLED` subscription with a future `current_period_end` as entitled. When LS later fires `subscription_expired` (after the period actually lapses), the backend flips the user back to `Free Users`.
+
+**Response (200):**
+
+```json
+{
+  "message": "subscription will cancel at period end",
+  "cancelled_at": "2026-08-05T12:00:00Z",
+  "current_period_end": "2026-08-31T10:00:00Z"
+}
+```
+
+**Error (404):** No subscription exists for this user.
+
+### 11.6 POST `billing/webhook/` (Public)
+
+Receives Lemon Squeezy webhook events. This endpoint is **public** (no JWT) — security is provided by HMAC signature verification against `LEMON_SQUEEZY_WEBHOOK_SECRET`. The `X-Signature` header must match `HMAC-SHA256(body, secret)`. The same `event_id` is never applied twice (idempotency via the `WebhookEvent` table); replays return `200` with `status: "skipped"`.
+
+Webhook URL to register in LS: `https://api.creatorintent.com/api/billing/webhook/`
+
+**Handled event names:**
+
+| Event name | Action |
+|---|---|
+| `subscription_created` | Upsert Subscription; recompute entitlement (add user to plan's group). |
+| `subscription_updated` | Same; handles upgrade/downgrade via new `variant_id`. |
+| `subscription_cancelled` | Mark `cancelled_at`; keep group until `current_period_end`. |
+| `subscription_expired` | Mark status=expired; recompute → drop to `Free Users`. |
+| `subscription_paused` / `subscription_resumed` | Set status accordingly and recompute. |
+| `subscription_payment_success` | Refresh `current_period_end`; recompute. |
+| `subscription_payment_failed` | Set status=`past_due`; recompute (user keeps access until period end). |
+| `order_created` | Stored but treated as a no-op (subscriptions-only MVP). |
+
+**Response (200):**
+
+```json
+{
+  "message": "webhook received",
+  "event_id": "evt_1",
+  "status": "processed"
+}
+```
+
+`status` is one of: `processed` (first delivery of a known event), `skipped` (replay of an already-seen `event_id`), `unknown` (event_name we don't handle — still stored to `WebhookEvent`), or `failed` (handler raised; the row's `error` field is populated and can be inspected in the admin).
+
+**Error (400):** Signature invalid OR JSON malformed OR `event_id` missing.

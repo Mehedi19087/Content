@@ -49,11 +49,13 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
     'rest_framework',
     'categories',
     'ideas',
     'users',
     'youtube_channels',
+    'billing',
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -66,6 +68,33 @@ REST_FRAMEWORK = {
         'users.authentication.LoggingJWTAuthentication',
     ),
 }
+
+# CORS configuration — allows the frontend (Lovable, mobile, etc.) to call
+# this API from a browser. Origins are env-driven so preview domains can be
+# added without code changes. CorsMiddleware intercepts OPTIONS preflight
+# requests and returns 200 with CORS headers BEFORE DRF's auth/permission
+# layer runs, so preflight requests never hit the 401 auth wall.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'CORS_ALLOWED_ORIGINS',
+        'https://creator-intent.lovable.app',
+    ).split(',')
+    if origin.strip()
+]
+CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = ['Content-Type', 'Authorization']
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
@@ -94,6 +123,7 @@ SIMPLE_JWT = {
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -223,3 +253,15 @@ OPENAI_IMAGE_SIZE = os.getenv('OPENAI_IMAGE_SIZE', '1536x1024')
 OPENAI_IMAGE_QUALITY = os.getenv('OPENAI_IMAGE_QUALITY', 'low')
 OPENAI_IMAGE_OUTPUT_FORMAT = os.getenv('OPENAI_IMAGE_OUTPUT_FORMAT', 'png')
 OPENAI_TIMEOUT_SECONDS = int(os.getenv('OPENAI_TIMEOUT_SECONDS', '120'))
+
+# Lemon Squeezy billing integration
+LEMON_SQUEEZY_API_KEY = os.getenv('LEMON_SQUEEZY_API_KEY', '')
+LEMON_SQUEEZY_WEBHOOK_SECRET = os.getenv('LEMON_SQUEEZY_WEBHOOK_SECRET', '')
+LEMON_SQUEEZY_STORE_ID = os.getenv('LEMON_SQUEEZY_STORE_ID', '')
+LEMON_SQUEEZY_API_BASE_URL = os.getenv(
+    'LEMON_SQUEEZY_API_BASE_URL', 'https://api.lemonsqueezy.com/v1'
+)
+LEMON_SQUEEZY_TIMEOUT_SECONDS = int(os.getenv('LEMON_SQUEEZY_TIMEOUT_SECONDS', '30'))
+FRONTEND_BILLING_SUCCESS_URL = os.getenv('FRONTEND_BILLING_SUCCESS_URL', '')
+FRONTEND_BILLING_CANCEL_URL = os.getenv('FRONTEND_BILLING_CANCEL_URL', '')
+MOBILE_BILLING_SUCCESS_URL = os.getenv('MOBILE_BILLING_SUCCESS_URL', '')

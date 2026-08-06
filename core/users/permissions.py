@@ -48,3 +48,36 @@ class HasIdeaWritePermission(permissions.BasePermission):
             return request.user.has_perm("ideas.add_ideacandidate")
             
         return False
+
+
+# ----------------------------------------------------------------------
+# Tier permissions (group-based, hierarchical)
+# ----------------------------------------------------------------------
+# The pricing matrix is cumulative: an upper tier unlocks every lower tier's
+# features. So we model each permission class as "user is in any of these
+# groups". Groups are populated by billing.services.recompute_user_entitlement
+# based on the user's active Stripe/Lemon Squeezy subscription.
+
+class HasTierPermission(permissions.BasePermission):
+    """Base class — subclasses declare which tiers count via ALLOWED_GROUPS."""
+    ALLOWED_GROUPS: tuple[str, ...] = ()
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return request.user.groups.filter(name__in=self.ALLOWED_GROUPS).exists()
+
+
+class HasStarterPermission(HasTierPermission):
+    """Starter + Pro + Creator all unlock Starter-tier features."""
+    ALLOWED_GROUPS = ("Starter Users", "Pro Users", "Creator Users")
+
+
+class HasProPermission(HasTierPermission):
+    """Pro + Creator unlock Pro-tier features."""
+    ALLOWED_GROUPS = ("Pro Users", "Creator Users")
+
+
+class HasCreatorPermission(HasTierPermission):
+    """Only the Creator tier unlocks Creator-tier features (e.g. AI image gen)."""
+    ALLOWED_GROUPS = ("Creator Users",)

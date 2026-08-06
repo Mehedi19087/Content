@@ -21,11 +21,17 @@ from .services import (
     refresh_ideas_for_category,
     research_youtube_intent_for_idea,
 )
-from users.permissions import HasIdeaWritePermission
+from rest_framework import permissions
+from users.permissions import (
+    HasCreatorPermission,
+    HasProPermission,
+    HasStarterPermission,
+)
 
 
 class TrendingIdeasAPIView(APIView):
-    permission_classes = [HasIdeaWritePermission]
+    # Trending ideas are visible to any authenticated user (Free tier included).
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         serializer = TrendingIdeaQuerySerializer(data=request.query_params)
@@ -44,7 +50,7 @@ class TrendingIdeasAPIView(APIView):
 
 
 class RefreshIdeasAPIView(APIView):
-    permission_classes = [HasIdeaWritePermission]
+    permission_classes = [HasStarterPermission]
 
     def post(self, request):
         serializer = RefreshIdeasSerializer(data=request.data)
@@ -73,7 +79,7 @@ class RefreshIdeasAPIView(APIView):
 
 
 class YouTubeIntentResearchAPIView(APIView):
-    permission_classes = [HasIdeaWritePermission]
+    permission_classes = [HasStarterPermission]
 
     def post(self, request):
         serializer = YouTubeIntentResearchSerializer(data=request.data)
@@ -102,7 +108,7 @@ class YouTubeIntentResearchAPIView(APIView):
 
 
 class ThumbnailPreparationAPIView(APIView):
-    permission_classes = [HasIdeaWritePermission]
+    permission_classes = [HasProPermission]
 
     def post(self, request):
         serializer = ThumbnailPreparationSerializer(data=request.data)
@@ -131,7 +137,7 @@ class ThumbnailPreparationAPIView(APIView):
 
 
 class GeneratePackageAPIView(APIView):
-    permission_classes = [HasIdeaWritePermission]
+    permission_classes = [HasCreatorPermission]
 
     def post(self, request):
         serializer = GeneratePackageSerializer(data=request.data)
