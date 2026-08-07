@@ -72,16 +72,22 @@ STOP_WORDS = {
 
 def get_active_ideas(
     *,
-    category_slug: str,
+    category_slug: str | None = None,
     region_code: str = "US",
     limit: int = MAX_IDEAS_PER_REFRESH,
 ) -> QuerySet[IdeaCandidate]:
-    category = get_active_category_by_slug(category_slug)
-    return IdeaCandidate.objects.filter(
-        category=category,
-        region_code=region_code,
-        is_active=True,
-    ).order_by("-trend_score", "-generated_at")[:limit]
+    filters = {
+        "category__is_active": True,
+        "region_code": region_code,
+        "is_active": True,
+    }
+    if category_slug:
+        filters["category"] = get_active_category_by_slug(category_slug)
+
+    return IdeaCandidate.objects.filter(**filters).order_by(
+        "-trend_score",
+        "-generated_at",
+    )[:limit]
 
 
 def refresh_ideas_for_category(

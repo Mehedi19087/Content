@@ -10,6 +10,7 @@ from .views import (
 
 
 urlpatterns = [
+    path("ideas/", TrendingIdeasAPIView.as_view(), name="ideas-list"),
     path("ideas/trending/", TrendingIdeasAPIView.as_view(), name="ideas-trending"),
     path("ideas/refresh/", RefreshIdeasAPIView.as_view(), name="ideas-refresh"),
     path(

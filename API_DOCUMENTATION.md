@@ -20,23 +20,70 @@ A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. 
 | 1 | `GET` | `auth/google/auth-url/` | Get Google login URL (Public) |
 | 2 | `GET` | `auth/google/callback/` | Google login callback (Public) |
 | 3 | `POST` | `auth/reviewer-login/` | App Store Reviewer Login (Public) |
-| 4 | `GET/PATCH/DELETE` | `auth/profile/` | Manage User Profile (Authenticated) |
-| 5 | `GET` | `categories/` | List all categories (Authenticated) |
-| 6 | `POST` | `categories/` | Create a category (Authenticated) |
-| 7 | `GET` | `categories/<id>/` | Get category by ID (Authenticated) |
-| 8 | `PUT` | `categories/<id>/` | Update category (Authenticated) |
-| 9 | `DELETE` | `categories/<id>/` | Delete category (Authenticated) |
-| 10 | `GET` | `ideas/trending/` | Get trending ideas (Authenticated) |
-| 11 | `POST` | `ideas/refresh/` | Refresh ideas for a category (Authenticated) |
-| 12 | `POST` | `ideas/youtube-intent/` | Research YouTube intent (Authenticated) |
-| 13 | `POST` | `ideas/thumbnail-preparation/` | Prepare thumbnail hooks (Authenticated) |
-| 14 | `POST` | `ideas/generate-package/` | Generate final content package (Authenticated) |
-| 15 | `GET` | `billing/plans/` | List purchasable plans (Authenticated) |
-| 16 | `POST` | `billing/checkout/` | Get Lemon Squeezy hosted checkout URL (Authenticated) |
-| 17 | `GET` | `billing/status/` | Get current user's subscription status (Authenticated) |
-| 18 | `POST` | `billing/portal/` | Get Lemon Squeezy customer portal URL (Authenticated) |
-| 19 | `POST` | `billing/cancel/` | Cancel subscription at period end (Authenticated) |
-| 20 | `POST` | `billing/webhook/` | Lemon Squeezy webhook receiver (Public) |
+| 4 | `POST` | `auth/token/refresh/` | Exchange a refresh token for a new access token (Public) |
+| 5 | `POST` | `auth/token/verify/` | Check whether a JWT is valid (Public) |
+| 6 | `GET/PATCH/DELETE` | `auth/profile/` | Manage User Profile (Authenticated) |
+| 7 | `GET` | `categories/` | List all categories (Authenticated) |
+| 8 | `POST` | `categories/` | Create a category (Authenticated) |
+| 9 | `GET` | `categories/<id>/` | Get category by ID (Authenticated) |
+| 10 | `PUT` | `categories/<id>/` | Update category (Authenticated) |
+| 11 | `DELETE` | `categories/<id>/` | Delete category (Authenticated) |
+| 12 | `GET` | `ideas/` | Get global or category-filtered trending ideas (Authenticated) |
+| 13 | `GET` | `ideas/trending/` | Backward-compatible trending ideas URL (Authenticated) |
+| 14 | `POST` | `ideas/refresh/` | Refresh ideas for a category (Authenticated) |
+| 15 | `POST` | `ideas/youtube-intent/` | Research YouTube intent (Authenticated) |
+| 16 | `POST` | `ideas/thumbnail-preparation/` | Prepare thumbnail hooks (Authenticated) |
+| 17 | `POST` | `ideas/generate-package/` | Generate final content package (Authenticated) |
+| 18 | `GET` | `billing/plans/` | List purchasable plans (Authenticated) |
+| 19 | `POST` | `billing/checkout/` | Get Lemon Squeezy hosted checkout URL (Authenticated) |
+| 20 | `GET` | `billing/status/` | Get current user's subscription status (Authenticated) |
+| 21 | `POST` | `billing/portal/` | Get Lemon Squeezy customer portal URL (Authenticated) |
+| 22 | `POST` | `billing/cancel/` | Cancel subscription at period end (Authenticated) |
+| 23 | `POST` | `billing/webhook/` | Lemon Squeezy webhook receiver (Public) |
+
+---
+
+## Token lifecycle
+
+Google login returns both `access` and `refresh`. Send the access token in the
+`Authorization: Bearer <access_token>` header for authenticated requests. When
+an API request returns `401`, exchange the stored refresh token for a new access
+token and retry the original request once.
+
+### POST `auth/token/refresh/`
+
+```json
+{
+  "refresh": "<refresh_token>"
+}
+```
+
+Successful response (`200`):
+
+```json
+{
+  "access": "<new_access_token>"
+}
+```
+
+### POST `auth/token/verify/`
+
+```json
+{
+  "token": "<access_or_refresh_token>"
+}
+```
+
+Successful response (`200`):
+
+```json
+{
+  "valid": true
+}
+```
+
+DRF-generated errors retain their original fields and also include a stable
+`error` object with `status`, `code`, `message`, and `details` fields.
 
 ---
 
@@ -228,19 +275,24 @@ Delete a category by its ID.
 
 ---
 
-## 6. GET `ideas/trending/`
+## 6. GET `ideas/`
 
-Retrieve active trending ideas for a category.
+Retrieve active trending ideas across all active categories or filter by a
+category. `ideas/trending/` remains available as an alias.
 
 **Query Parameters:**
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `category_slug` | string | Yes | — | Category slug |
+| `category_slug` | string | No | — | Optional category slug |
 | `region_code` | string | No | `"US"` | Region code |
+| `region` | string | No | `"US"` | Alias for `region_code` used by the web client |
 | `limit` | integer | No | `10` | Max ideas to return (1-20) |
 
-**Example:** `GET /api/ideas/trending/?category_slug=ai-automation&region_code=US&limit=5`
+**Web-client example:** `GET /api/ideas/?region=US&limit=10`
+
+**Category-filtered example:**
+`GET /api/ideas/trending/?category_slug=ai-automation&region_code=US&limit=5`
 
 **Response (200):**
 

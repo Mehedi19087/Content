@@ -72,6 +72,44 @@ class IdeasAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_list_ideas_compatibility_endpoint_accepts_region_alias(self):
+        second_category = Category.objects.create(
+            name="Creator Economy",
+            slug="creator-economy",
+            default_regions=["US"],
+        )
+        top_idea = IdeaCandidate.objects.create(
+            category=second_category,
+            region_code="US",
+            title="The Creator Business Model Growing Fastest This Year",
+            why_now="Creator business breakdowns are drawing recent interest.",
+            audience_promise="Show creators which business model is gaining traction.",
+            suggested_format="Analysis",
+            difficulty=IdeaCandidate.Difficulty.MEDIUM,
+            freshness=IdeaCandidate.Freshness.HIGH,
+            trend_score=95,
+            source_signal="Based on recent creator economy signals",
+            source_video_count=8,
+        )
+
+        response = self.client.get(
+            reverse("ideas-list"),
+            {"region": "US", "limit": 1},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["data"]), 1)
+        self.assertEqual(response.data["data"][0]["title"], top_idea.title)
+
+    def test_list_ideas_rejects_conflicting_region_parameters(self):
+        response = self.client.get(
+            reverse("ideas-list"),
+            {"region": "US", "region_code": "GB"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"]["code"], "validation_error")
+
     @patch("ideas.views.refresh_ideas_for_category")
     def test_refresh_ideas(self, mock_refresh_ideas_for_category):
         mock_refresh_ideas_for_category.return_value = [self.idea]

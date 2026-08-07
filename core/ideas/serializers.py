@@ -2,9 +2,26 @@ from rest_framework import serializers
 
 
 class TrendingIdeaQuerySerializer(serializers.Serializer):
-    category_slug = serializers.SlugField(max_length=120)
-    region_code = serializers.CharField(max_length=20, default="US", required=False)
+    category_slug = serializers.SlugField(max_length=120, required=False)
+    region_code = serializers.CharField(max_length=20, required=False)
+    region = serializers.CharField(max_length=20, required=False, write_only=True)
     limit = serializers.IntegerField(default=10, min_value=1, max_value=20, required=False)
+
+    def validate(self, attrs):
+        region_code = attrs.pop("region_code", None)
+        region_alias = attrs.pop("region", None)
+
+        if (
+            region_code
+            and region_alias
+            and region_code.upper() != region_alias.upper()
+        ):
+            raise serializers.ValidationError(
+                {"region": "Use either region or region_code, not conflicting values."}
+            )
+
+        attrs["region_code"] = (region_code or region_alias or "US").upper()
+        return attrs
 
 
 class RefreshIdeasSerializer(serializers.Serializer):

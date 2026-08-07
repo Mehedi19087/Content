@@ -2,7 +2,7 @@ from django.shortcuts import render
 
 from rest_framework.views import APIView 
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import permissions, status
 from rest_framework.exceptions import ValidationError
 from .serializers import CreateCategorySerializer, ResponseCategorySerializer
 from .services import (
@@ -16,6 +16,11 @@ from users.permissions import HasCategoryWritePermission
 
 class CreateListCategoryAPIView(APIView):
     permission_classes = [HasCategoryWritePermission]
+
+    def get_permissions(self):
+        if self.request.method in permissions.SAFE_METHODS:
+            return [permissions.IsAuthenticated()]
+        return super().get_permissions()
 
     def get(self, request):
         # Retrieve all categories and serialize them
@@ -57,6 +62,11 @@ class CreateListCategoryAPIView(APIView):
 
 class CategoryDetailAPIView(APIView):
     permission_classes = [HasCategoryWritePermission]
+
+    def get_permissions(self):
+        if self.request.method in permissions.SAFE_METHODS:
+            return [permissions.IsAuthenticated()]
+        return super().get_permissions()
 
     def get(self, request, pk):
         # Retrieve a single category by ID
@@ -111,5 +121,4 @@ class CategoryDetailAPIView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
 

@@ -67,6 +67,7 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'users.authentication.LoggingJWTAuthentication',
     ),
+    'EXCEPTION_HANDLER': 'core.exceptions.api_exception_handler',
 }
 
 # CORS configuration — allows the frontend (Lovable, mobile, etc.) to call

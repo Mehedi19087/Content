@@ -27,18 +27,17 @@ class LoggingJWTAuthentication(JWTAuthentication):
         raw_token = self.get_raw_token(header)
         if raw_token is None:
             logger.warning(
-                "JWT header present but raw token missing | auth_header=%s | signing_key_fp=%s",
-                header[:32],
+                "JWT header present but raw token missing | signing_key_fp=%s",
                 _fingerprint(settings.SIMPLE_JWT.get("SIGNING_KEY")),
             )
             return None
 
         logger.info(
-            "Authenticating JWT | path=%s | method=%s | signing_key_fp=%s | token_prefix=%s",
+            "Authenticating JWT | path=%s | method=%s | signing_key_fp=%s | token_fp=%s",
             getattr(request, "path", ""),
             getattr(request, "method", ""),
             _fingerprint(settings.SIMPLE_JWT.get("SIGNING_KEY")),
-            raw_token[:20].decode("utf-8", errors="ignore"),
+            _fingerprint(raw_token),
         )
 
         validated_token = self.get_validated_token(raw_token)
@@ -57,11 +56,11 @@ class LoggingJWTAuthentication(JWTAuthentication):
             return super().get_validated_token(raw_token)
         except InvalidToken as exc:
             logger.error(
-                "JWT validation failed: %s | signing_key_fp=%s | algorithm=%s | header_types=%s | token_prefix=%s",
+                "JWT validation failed: %s | signing_key_fp=%s | algorithm=%s | header_types=%s | token_fp=%s",
                 exc,
                 _fingerprint(settings.SIMPLE_JWT.get("SIGNING_KEY")),
                 settings.SIMPLE_JWT.get("ALGORITHM"),
                 settings.SIMPLE_JWT.get("AUTH_HEADER_TYPES"),
-                str(raw_token)[:16],
+                _fingerprint(raw_token),
             )
             raise

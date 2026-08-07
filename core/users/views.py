@@ -27,7 +27,12 @@ from .oauth_utils import (
     fingerprint,
     mobile_deep_link_response,
 )
-from .serializers import UserSerializer
+from .serializers import (
+    RefreshAccessTokenSerializer,
+    UserSerializer,
+    VerifyTokenSerializer,
+)
+from .services import create_access_token_from_refresh, validate_token
 
 User = get_user_model()
 logger = logging.getLogger("users.views")
@@ -38,6 +43,31 @@ def _error_response(message, status_code=status.HTTP_400_BAD_REQUEST, extra=None
     if extra:
         payload.update(extra)
     return Response(payload, status=status_code)
+
+
+class RefreshAccessTokenAPIView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = RefreshAccessTokenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        access_token = create_access_token_from_refresh(
+            refresh_token=serializer.validated_data["refresh"],
+        )
+        return Response({"access": access_token}, status=status.HTTP_200_OK)
+
+
+class VerifyTokenAPIView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = VerifyTokenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validate_token(token=serializer.validated_data["token"])
+        return Response({"valid": True}, status=status.HTTP_200_OK)
+
 
 @method_decorator(xframe_options_exempt, name="dispatch")
 class GoogleAuthURLView(APIView):
