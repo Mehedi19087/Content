@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
+import re
 import uuid
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any
 
+import cloudinary
+import cloudinary.uploader
 from django.conf import settings
 from rest_framework.exceptions import ValidationError
 
@@ -20,6 +23,32 @@ class OpenAIImageClient:
         self.api_key = api_key or settings.OPENAI_API_KEY
         if not self.api_key:
             raise ValidationError({"openai_api_key": "OPENAI_API_KEY is not configured."})
+
+        missing_cloudinary_settings = [
+            name
+            for name, value in (
+                ("CLOUDINARY_CLOUD_NAME", settings.CLOUDINARY_CLOUD_NAME),
+                ("CLOUDINARY_API_KEY", settings.CLOUDINARY_API_KEY),
+                ("CLOUDINARY_API_SECRET", settings.CLOUDINARY_API_SECRET),
+            )
+            if not value
+        ]
+        if missing_cloudinary_settings:
+            raise ValidationError(
+                {
+                    "cloudinary": (
+                        "Missing Cloudinary settings: "
+                        f"{', '.join(missing_cloudinary_settings)}."
+                    )
+                }
+            )
+
+        cloudinary.config(
+            cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+            api_key=settings.CLOUDINARY_API_KEY,
+            api_secret=settings.CLOUDINARY_API_SECRET,
+            secure=True,
+        )
 
     def generate_thumbnail(
         self,
@@ -74,13 +103,13 @@ class OpenAIImageClient:
                 {"openai_image_response": f"OpenAI returned invalid image data: {exc}"}
             )
 
-        return self._save_image(
+        return self._upload_image(
             image_base64=image_base64,
             filename_prefix=filename_prefix,
             output_format=settings.OPENAI_IMAGE_OUTPUT_FORMAT,
         )
 
-    def _save_image(
+    def _upload_image(
         self,
         *,
         image_base64: str,
@@ -88,16 +117,43 @@ class OpenAIImageClient:
         output_format: str,
     ) -> dict[str, str]:
         output_format = output_format.lower().strip() or "png"
-        image_bytes = base64.b64decode(image_base64)
-        filename = f"{filename_prefix}-{uuid.uuid4().hex}.{output_format}"
-        relative_path = Path("generated_thumbnails") / filename
-        absolute_path = Path(settings.MEDIA_ROOT) / relative_path
-        absolute_path.parent.mkdir(parents=True, exist_ok=True)
-        absolute_path.write_bytes(image_bytes)
+        try:
+            image_bytes = base64.b64decode(image_base64)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                {"openai_image_response": f"OpenAI returned invalid base64 data: {exc}"}
+            )
+
+        safe_prefix = re.sub(r"[^a-zA-Z0-9_-]+", "-", filename_prefix).strip("-")
+        safe_prefix = safe_prefix or "thumbnail"
+        asset_name = f"{safe_prefix}-{uuid.uuid4().hex}"
+        public_id = f"creatorintent/generated_thumbnails/{asset_name}"
+        image_file = io.BytesIO(image_bytes)
+        image_file.name = f"{asset_name}.{output_format}"
+
+        try:
+            upload_result = cloudinary.uploader.upload(
+                image_file,
+                public_id=public_id,
+                resource_type="image",
+                format=output_format,
+                overwrite=False,
+            )
+        except Exception as exc:
+            raise ValidationError(
+                {"cloudinary_upload": f"Failed to upload generated thumbnail: {exc}"}
+            )
+
+        secure_url = str(upload_result.get("secure_url", "")).strip()
+        uploaded_public_id = str(upload_result.get("public_id", "")).strip()
+        if not secure_url or not uploaded_public_id:
+            raise ValidationError(
+                {"cloudinary_upload": "Cloudinary returned incomplete upload data."}
+            )
 
         return {
-            "url": f"{settings.MEDIA_URL}{relative_path.as_posix()}",
-            "path": str(absolute_path),
+            "url": secure_url,
+            "public_id": uploaded_public_id,
             "model": settings.OPENAI_IMAGE_MODEL,
             "size": settings.OPENAI_IMAGE_SIZE,
             "quality": settings.OPENAI_IMAGE_QUALITY,

@@ -606,10 +606,11 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
   "message": "content package generated successfully",
   "data": {
     "thumbnail": {
-      "url": "https://oaidalleapiprodscus.blob.core.windows.net/...",
-      "model": "dall-e-3",
-      "size": "1792x1024",
-      "quality": "hd",
+      "url": "https://res.cloudinary.com/example/image/upload/v1/creatorintent/generated_thumbnails/example.png",
+      "public_id": "creatorintent/generated_thumbnails/example",
+      "model": "gpt-image-2",
+      "size": "1536x1024",
+      "quality": "low",
       "selected_hook": {
         "id": "curiosity",
         "angle": "curiosity",
@@ -634,6 +635,17 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
       "hashtags": ["#aiagents", "#chatgpt", "#automation"],
       "keywords": ["ai agents", "chatgpt", "automation", "creator tools", "productivity"]
     },
+    "script": {
+      "format": "creator_talking_guide",
+      "audience_goal": "Help creators understand which AI agents are practical.",
+      "core_message": "Choose agents based on a real workflow problem.",
+      "opening": {},
+      "sections": [],
+      "closing": {},
+      "delivery_notes": [],
+      "facts_to_verify": [],
+      "estimated_duration_minutes": 8
+    },
     "edit_options": [
       "Change thumbnail text",
       "Use my face",
@@ -652,8 +664,12 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
 |---------|---------|---------------|
 | YouTube Data API v3 | Fetch trending videos, search results | `youtube_client.py` |
 | Groq LLM | Generate video ideas, intent analysis, package plans | `groq_client.py` |
-| OpenAI DALL-E 3 | Generate thumbnail images | `openai_image_client.py` |
+| OpenAI Image API | Generate thumbnail images | `openai_image_client.py` |
+| Cloudinary | Persist generated thumbnails and serve HTTPS URLs | `openai_image_client.py` |
 | Lemon Squeezy | Subscription billing, customer portal, webhooks | `billing/client.py` |
+
+Cloudinary thumbnail storage requires `CLOUDINARY_CLOUD_NAME`,
+`CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` in the backend environment.
 
 ---
 
@@ -666,7 +682,7 @@ The typical API usage follows this sequence:
 3. **Get Trending Ideas** - `GET ideas/trending/` (list generated ideas)
 4. **Research Intent** - `POST ideas/youtube-intent/` (analyze a specific idea)
 5. **Prepare Thumbnail** - `POST ideas/thumbnail-preparation/` (generate hook cards and subject plans)
-6. **Generate Package** - `POST ideas/generate-package/` (create final thumbnail + SEO + edit options)
+6. **Generate Package** - `POST ideas/generate-package/` (create a Cloudinary-hosted thumbnail + SEO + script + edit options)
 
 ---
 

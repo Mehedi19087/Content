@@ -146,6 +146,10 @@ class ResponseIdeaCandidateSerializer(serializers.Serializer):
 class ResponseYouTubeIntentResearchSerializer(serializers.Serializer):
     viewer_intent = serializers.CharField(read_only=True)
     content_type = serializers.CharField(read_only=True)
+    search_suggestions = serializers.ListField(
+        child=serializers.CharField(),
+        read_only=True,
+    )
     title_patterns = serializers.ListField(
         child=serializers.CharField(),
         read_only=True,
@@ -180,6 +184,7 @@ class ResponseThumbnailPreparationSerializer(serializers.Serializer):
 class ResponseGeneratePackageSerializer(serializers.Serializer):
     thumbnail = serializers.DictField(read_only=True)
     seo = serializers.DictField(read_only=True)
+    script = serializers.DictField(read_only=True)
     edit_options = serializers.ListField(
         child=serializers.CharField(),
         read_only=True,

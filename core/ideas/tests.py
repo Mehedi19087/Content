@@ -1,14 +1,22 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.test import override_settings
 from django.urls import reverse
+from rest_framework.exceptions import ValidationError
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from categories.models import Category
 from .models import IdeaCandidate
-from .services import validate_generated_ideas
+from .openai_image_client import OpenAIImageClient
+from .services import (
+    normalize_script_guide,
+    research_youtube_intent_for_idea,
+    validate_generated_ideas,
+)
+from .youtube_suggest_client import YouTubeSuggestClient
 
 User = get_user_model()
 
@@ -157,6 +165,10 @@ class IdeasAPITestCase(APITestCase):
                 "ai assistant",
                 "automation tools",
             ],
+            "search_suggestions": [
+                "ai tools for content creators",
+                "best ai tools for productivity",
+            ],
         }
         url = reverse("ideas-youtube-intent")
 
@@ -187,6 +199,13 @@ class IdeasAPITestCase(APITestCase):
                 "busy workspace",
             ],
         )
+        self.assertEqual(
+            response.data["data"]["search_suggestions"],
+            [
+                "ai tools for content creators",
+                "best ai tools for productivity",
+            ],
+        )
         mock_research_youtube_intent_for_idea.assert_called_once_with(
             idea="5 AI tools that can replace your assistant",
             region_code="US",
@@ -204,6 +223,140 @@ class IdeasAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch("ideas.services.YouTubeClient")
+    @patch("ideas.services.YouTubeSuggestClient")
+    def test_youtube_intent_uses_search_suggestions(
+        self,
+        mock_suggest_client_class,
+        mock_youtube_client_class,
+    ):
+        mock_suggest_client_class.return_value.fetch_suggestions.return_value = [
+            "ai agents for beginners",
+            "ai agents tutorial",
+            "ai agents explained",
+        ]
+        youtube_client = mock_youtube_client_class.return_value
+        youtube_client.search_videos_by_query.return_value = [
+            {"video_id": "video-1"},
+        ]
+        youtube_client.fetch_videos_by_ids.return_value = [
+            {
+                "id": "video-1",
+                "snippet": {
+                    "title": "How AI Agents Work",
+                    "description": "A practical AI agent guide.",
+                    "tags": ["ai agents"],
+                },
+                "statistics": {"viewCount": "1000", "likeCount": "100"},
+            }
+        ]
+
+        result = research_youtube_intent_for_idea(
+            idea="AI agents explained for creators",
+            region_code="US",
+            language_code="en",
+        )
+
+        mock_suggest_client_class.return_value.fetch_suggestions.assert_called_once_with(
+            query="ai agents explained creators",
+            region_code="US",
+            language_code="en",
+        )
+        self.assertEqual(
+            result["search_suggestions"],
+            [
+                "ai agents for beginners",
+                "ai agents tutorial",
+                "ai agents explained",
+            ],
+        )
+        self.assertEqual(result["seo_keywords"][0], "ai agents beginners")
+        self.assertIn("ai agents tutorial", result["viewer_intent"])
+
+    @patch("ideas.youtube_suggest_client.urllib.request.urlopen")
+    def test_youtube_suggest_client_parses_firefox_response(self, mock_urlopen):
+        response = MagicMock()
+        response.read.return_value = (
+            b'["ai agents", ["ai agents tutorial", "ai agents explained", '
+            b'"ai agents for beginners"], [], {}]'
+        )
+        mock_urlopen.return_value.__enter__.return_value = response
+
+        suggestions = YouTubeSuggestClient().fetch_suggestions(
+            query="ai agents",
+            region_code="US",
+            language_code="en",
+        )
+
+        self.assertEqual(
+            suggestions,
+            [
+                "ai agents tutorial",
+                "ai agents explained",
+                "ai agents for beginners",
+            ],
+        )
+
+    @patch("ideas.youtube_suggest_client.urllib.request.urlopen")
+    def test_youtube_suggest_failure_does_not_break_intent(self, mock_urlopen):
+        mock_urlopen.side_effect = TimeoutError("suggest service timed out")
+
+        suggestions = YouTubeSuggestClient().fetch_suggestions(query="ai agents")
+
+        self.assertEqual(suggestions, [])
+
+    @override_settings(
+        CLOUDINARY_CLOUD_NAME="demo-cloud",
+        CLOUDINARY_API_KEY="cloudinary-key",
+        CLOUDINARY_API_SECRET="cloudinary-secret",
+    )
+    @patch("ideas.openai_image_client.cloudinary.uploader.upload")
+    def test_generated_thumbnail_uploads_to_cloudinary(self, mock_upload):
+        mock_upload.return_value = {
+            "secure_url": (
+                "https://res.cloudinary.com/demo-cloud/image/upload/"
+                "creatorintent/generated_thumbnails/test.png"
+            ),
+            "public_id": "creatorintent/generated_thumbnails/test",
+        }
+        client = OpenAIImageClient(api_key="openai-key")
+
+        result = client._upload_image(
+            image_base64="aW1hZ2UtYnl0ZXM=",
+            filename_prefix="AI agents thumbnail",
+            output_format="png",
+        )
+
+        self.assertEqual(
+            result["url"],
+            (
+                "https://res.cloudinary.com/demo-cloud/image/upload/"
+                "creatorintent/generated_thumbnails/test.png"
+            ),
+        )
+        self.assertEqual(
+            result["public_id"],
+            "creatorintent/generated_thumbnails/test",
+        )
+        uploaded_file = mock_upload.call_args.args[0]
+        self.assertEqual(uploaded_file.getvalue(), b"image-bytes")
+        self.assertTrue(
+            mock_upload.call_args.kwargs["public_id"].startswith(
+                "creatorintent/generated_thumbnails/AI-agents-thumbnail-"
+            )
+        )
+
+    @override_settings(
+        CLOUDINARY_CLOUD_NAME="",
+        CLOUDINARY_API_KEY="",
+        CLOUDINARY_API_SECRET="",
+    )
+    def test_thumbnail_generation_requires_cloudinary_credentials(self):
+        with self.assertRaises(ValidationError) as context:
+            OpenAIImageClient(api_key="openai-key")
+
+        self.assertIn("cloudinary", context.exception.detail)
 
     def test_prepare_thumbnail_from_youtube_intent(self):
         url = reverse("ideas-thumbnail-preparation")
@@ -279,7 +432,8 @@ class IdeasAPITestCase(APITestCase):
     def test_generate_content_package(self, mock_generate_content_package):
         mock_generate_content_package.return_value = {
             "thumbnail": {
-                "url": "/media/generated_thumbnails/test.png",
+                "url": "https://res.cloudinary.com/demo/image/upload/test.png",
+                "public_id": "creatorintent/generated_thumbnails/test",
                 "model": "gpt-image-2",
                 "size": "1536x1024",
                 "quality": "low",
@@ -296,6 +450,32 @@ class IdeasAPITestCase(APITestCase):
                 "tags": ["ai tools"],
                 "hashtags": ["#AITools"],
                 "keywords": ["ai tools"],
+            },
+            "script": {
+                "format": "creator_talking_guide",
+                "audience_goal": "Choose AI tools that save meaningful time.",
+                "core_message": "Choose tools based on workflow needs.",
+                "opening": {
+                    "viewer_need": "Know which AI tools are worth trying.",
+                    "hook_guidance": "Start with the cost of repetitive work.",
+                    "promise": "Show where each tool is genuinely useful.",
+                },
+                "sections": [
+                    {
+                        "heading": "Start with the workflow",
+                        "viewer_question": "Which work should I automate?",
+                        "talking_points": ["Identify repetitive creator tasks."],
+                        "proof_or_example": "Walk through one supported workflow.",
+                        "retention_bridge": "Move to the first tool category.",
+                    }
+                ],
+                "closing": {
+                    "key_takeaway": "Choose tools that solve a measured problem.",
+                    "call_to_action": "Ask viewers which task wastes their time.",
+                },
+                "delivery_notes": ["Use concrete examples."],
+                "facts_to_verify": [],
+                "estimated_duration_minutes": 8,
             },
             "edit_options": [
                 "Change thumbnail text",
@@ -351,11 +531,19 @@ class IdeasAPITestCase(APITestCase):
         )
         self.assertEqual(
             response.data["data"]["thumbnail"]["url"],
-            "/media/generated_thumbnails/test.png",
+            "https://res.cloudinary.com/demo/image/upload/test.png",
+        )
+        self.assertEqual(
+            response.data["data"]["thumbnail"]["public_id"],
+            "creatorintent/generated_thumbnails/test",
         )
         self.assertEqual(
             response.data["data"]["seo"]["title"],
             "5 AI Tools That Can Replace Your Assistant",
+        )
+        self.assertEqual(
+            response.data["data"]["script"]["format"],
+            "creator_talking_guide",
         )
         mock_generate_content_package.assert_called_once()
 
@@ -374,6 +562,23 @@ class IdeasAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_script_guide_falls_back_when_ai_output_is_missing(self):
+        script = normalize_script_guide(
+            script=None,
+            idea="5 AI tools that can replace your assistant",
+            youtube_intent={
+                "viewer_intent": "find AI tools that save time without wasting money",
+            },
+        )
+
+        self.assertEqual(script["format"], "creator_talking_guide")
+        self.assertEqual(
+            script["audience_goal"],
+            "find AI tools that save time without wasting money",
+        )
+        self.assertGreaterEqual(len(script["sections"]), 3)
+        self.assertEqual(script["estimated_duration_minutes"], 8)
 
     def test_validate_generated_ideas_rejects_vague_titles(self):
         clusters = [

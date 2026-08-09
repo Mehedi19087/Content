@@ -17,6 +17,7 @@ from .groq_client import GroqClient
 from .models import IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .youtube_client import YouTubeClient
+from .youtube_suggest_client import YouTubeSuggestClient
 
 
 MAX_IDEAS_PER_REFRESH = 10
@@ -136,6 +137,11 @@ def research_youtube_intent_for_idea(
     max_results: int = 10,
 ) -> dict[str, Any]:
     query = build_youtube_intent_query(idea)
+    search_suggestions = YouTubeSuggestClient().fetch_suggestions(
+        query=query,
+        region_code=region_code,
+        language_code=language_code,
+    )
     youtube_client = YouTubeClient()
     search_results = youtube_client.search_videos_by_query(
         query=query,
@@ -164,6 +170,7 @@ def research_youtube_intent_for_idea(
         idea=idea,
         query=query,
         videos=normalized_videos,
+        search_suggestions=search_suggestions,
     )
 
 
@@ -208,16 +215,20 @@ def analyze_youtube_intent(
     idea: str,
     query: str,
     videos: list[dict[str, Any]],
+    search_suggestions: list[str] | None = None,
 ) -> dict[str, Any]:
+    search_suggestions = normalize_string_list(search_suggestions or [])
     titles = [video["title"] for video in videos]
     combined_text = " ".join(
         [idea, query]
+        + search_suggestions
         + titles
         + [video.get("description", "")[:300] for video in videos]
     ).lower()
     keywords = extract_seo_keywords(
         idea=idea,
         videos=videos,
+        search_suggestions=search_suggestions,
     )
     content_type = detect_content_type(titles=titles, combined_text=combined_text)
 
@@ -225,9 +236,10 @@ def analyze_youtube_intent(
         "viewer_intent": build_viewer_intent(
             keywords=keywords,
             content_type=content_type,
+            search_suggestions=search_suggestions,
         ),
         "content_type": content_type,
-        "title_patterns": detect_title_patterns(titles),
+        "title_patterns": detect_title_patterns(titles + search_suggestions),
         "emotional_angles": detect_emotional_angles(combined_text),
         "thumbnail_subjects": detect_thumbnail_subjects(
             idea=idea,
@@ -235,6 +247,7 @@ def analyze_youtube_intent(
             keywords=keywords,
         ),
         "seo_keywords": keywords,
+        "search_suggestions": search_suggestions,
     }
 
 
@@ -378,6 +391,7 @@ def generate_content_package(
     return {
         "thumbnail": {
             "url": thumbnail_asset["url"],
+            "public_id": thumbnail_asset["public_id"],
             "model": thumbnail_asset["model"],
             "size": thumbnail_asset["size"],
             "quality": thumbnail_asset["quality"],
@@ -386,6 +400,7 @@ def generate_content_package(
             "used_subjects": subject_plan,
         },
         "seo": package_plan["seo"],
+        "script": package_plan["script"],
         "edit_options": package_plan["edit_options"],
     }
 
@@ -399,8 +414,10 @@ def generate_package_plan_with_groq(
     creator_image_choice: dict[str, Any],
 ) -> dict[str, Any]:
     system_prompt = """
-You create a YouTube thumbnail prompt and SEO package for creators.
-Return strict JSON with keys: thumbnail_prompt, seo, edit_options.
+You are a senior YouTube content strategist. Create one cohesive content package that
+matches the video idea, researched viewer intent, selected hook, and visual direction.
+Return strict JSON with exactly these top-level keys: thumbnail_prompt, seo, script,
+edit_options.
 
 thumbnail_prompt rules:
 - Target a 16:9 YouTube thumbnail.
@@ -420,6 +437,52 @@ seo rules:
 - description should start with two strong SEO lines.
 - tags and keywords must be arrays.
 
+script rules:
+- Create a flexible creator talking guide, not a word-for-word screenplay.
+- Help the creator understand what the viewer wants, what the viewer needs to hear,
+  and what each part of the video must deliver.
+- Keep every section specific to this idea and the supplied viewer intent. Avoid
+  generic advice that could fit any video.
+- The opening must earn attention quickly, state the viewer's problem or desire, and
+  make a clear promise without repeating the thumbnail text mechanically.
+- Build a logical progression. Each section must answer a real viewer question and
+  move the viewer closer to the promised outcome.
+- Give concise talking points, a useful proof/example suggestion, and a retention
+  bridge for each section. Talking points are guidance the creator can express in
+  their own voice, not lines they must read verbatim.
+- Never invent personal experience, product testing, statistics, quotes, or factual
+  claims. Mark anything requiring research as a fact to verify before recording.
+- End with a useful takeaway and a natural call to action related to the topic.
+- script must use this exact JSON shape:
+  {
+    "format": "creator_talking_guide",
+    "audience_goal": "string",
+    "core_message": "string",
+    "opening": {
+      "viewer_need": "string",
+      "hook_guidance": "string",
+      "promise": "string"
+    },
+    "sections": [
+      {
+        "heading": "string",
+        "viewer_question": "string",
+        "talking_points": ["string"],
+        "proof_or_example": "string",
+        "retention_bridge": "string"
+      }
+    ],
+    "closing": {
+      "key_takeaway": "string",
+      "call_to_action": "string"
+    },
+    "delivery_notes": ["string"],
+    "facts_to_verify": ["string"],
+    "estimated_duration_minutes": 8
+  }
+- Provide 4 to 7 sections and enough substance for approximately 8 minutes while
+  keeping the guidance concise and easy to scan during recording preparation.
+
 edit_options must be 4 short strings.
 """.strip()
     user_payload = {
@@ -432,6 +495,9 @@ edit_options must be 4 short strings.
             "thumbnail_size": "16:9",
             "thumbnail_text": selected_hook.get("thumbnail_text", ""),
             "seo_language": "English",
+            "script_language": "English",
+            "script_format": "creator_talking_guide",
+            "target_duration_minutes": 8,
         },
     }
     generated = GroqClient().generate_json(
@@ -476,6 +542,11 @@ def normalize_generated_package_plan(
         idea=idea,
         youtube_intent=youtube_intent,
     )
+    script = normalize_script_guide(
+        script=generated.get("script"),
+        idea=idea,
+        youtube_intent=youtube_intent,
+    )
 
     edit_options = normalize_string_list(generated.get("edit_options", []))
     if len(edit_options) < 4:
@@ -489,7 +560,159 @@ def normalize_generated_package_plan(
     return {
         "thumbnail_prompt": thumbnail_prompt,
         "seo": seo,
+        "script": script,
         "edit_options": edit_options[:4],
+    }
+
+
+def normalize_script_guide(
+    *,
+    script: Any,
+    idea: str,
+    youtube_intent: dict[str, Any],
+) -> dict[str, Any]:
+    fallback = build_fallback_script_guide(
+        idea=idea,
+        youtube_intent=youtube_intent,
+    )
+    if not isinstance(script, dict):
+        return fallback
+
+    opening = script.get("opening")
+    opening = opening if isinstance(opening, dict) else {}
+    closing = script.get("closing")
+    closing = closing if isinstance(closing, dict) else {}
+
+    sections = []
+    raw_sections = script.get("sections")
+    if isinstance(raw_sections, list):
+        for section in raw_sections[:7]:
+            if not isinstance(section, dict):
+                continue
+            heading = str(section.get("heading", "")).strip()
+            talking_points = normalize_string_list(section.get("talking_points", []))
+            if not heading or not talking_points:
+                continue
+            sections.append(
+                {
+                    "heading": heading,
+                    "viewer_question": str(
+                        section.get("viewer_question", "")
+                    ).strip(),
+                    "talking_points": talking_points[:6],
+                    "proof_or_example": str(
+                        section.get("proof_or_example", "")
+                    ).strip(),
+                    "retention_bridge": str(
+                        section.get("retention_bridge", "")
+                    ).strip(),
+                }
+            )
+
+    if not sections:
+        sections = fallback["sections"]
+
+    try:
+        estimated_duration = int(script.get("estimated_duration_minutes", 8))
+    except (TypeError, ValueError):
+        estimated_duration = 8
+
+    return {
+        "format": "creator_talking_guide",
+        "audience_goal": str(script.get("audience_goal", "")).strip()
+        or fallback["audience_goal"],
+        "core_message": str(script.get("core_message", "")).strip()
+        or fallback["core_message"],
+        "opening": {
+            "viewer_need": str(opening.get("viewer_need", "")).strip()
+            or fallback["opening"]["viewer_need"],
+            "hook_guidance": str(opening.get("hook_guidance", "")).strip()
+            or fallback["opening"]["hook_guidance"],
+            "promise": str(opening.get("promise", "")).strip()
+            or fallback["opening"]["promise"],
+        },
+        "sections": sections,
+        "closing": {
+            "key_takeaway": str(closing.get("key_takeaway", "")).strip()
+            or fallback["closing"]["key_takeaway"],
+            "call_to_action": str(closing.get("call_to_action", "")).strip()
+            or fallback["closing"]["call_to_action"],
+        },
+        "delivery_notes": normalize_string_list(script.get("delivery_notes", []))
+        or fallback["delivery_notes"],
+        "facts_to_verify": normalize_string_list(script.get("facts_to_verify", [])),
+        "estimated_duration_minutes": max(1, min(30, estimated_duration)),
+    }
+
+
+def build_fallback_script_guide(
+    *,
+    idea: str,
+    youtube_intent: dict[str, Any],
+) -> dict[str, Any]:
+    viewer_intent = str(youtube_intent.get("viewer_intent", "")).strip()
+    audience_goal = viewer_intent or f"Understand the practical value of {idea}."
+    return {
+        "format": "creator_talking_guide",
+        "audience_goal": audience_goal,
+        "core_message": f"Give viewers a clear, useful answer about {idea}.",
+        "opening": {
+            "viewer_need": audience_goal,
+            "hook_guidance": (
+                "Open with the viewer's most urgent question, then explain why the "
+                "answer matters now."
+            ),
+            "promise": f"Promise a practical, honest explanation of {idea}.",
+        },
+        "sections": [
+            {
+                "heading": "Clarify the viewer's problem",
+                "viewer_question": "Why should this topic matter to me?",
+                "talking_points": [
+                    "Describe the viewer's current situation and desired outcome.",
+                    "Explain the gap this video will help them close.",
+                ],
+                "proof_or_example": (
+                    "Use a realistic scenario; verify any factual claim before recording."
+                ),
+                "retention_bridge": "Preview the practical answer coming next.",
+            },
+            {
+                "heading": "Deliver the practical answer",
+                "viewer_question": "What should I understand or do?",
+                "talking_points": [
+                    f"Break {idea} into clear, useful decisions or steps.",
+                    "Explain tradeoffs, limitations, and who each option is for.",
+                ],
+                "proof_or_example": (
+                    "Demonstrate with an example the creator can support honestly."
+                ),
+                "retention_bridge": "Lead into the most important mistake to avoid.",
+            },
+            {
+                "heading": "Help the viewer apply it",
+                "viewer_question": "How do I use this after the video?",
+                "talking_points": [
+                    "Summarize the decision the viewer can make immediately.",
+                    "Give a simple next step and set realistic expectations.",
+                ],
+                "proof_or_example": "Offer a short checklist or before-and-after scenario.",
+                "retention_bridge": "Transition naturally to the final takeaway.",
+            },
+        ],
+        "closing": {
+            "key_takeaway": f"Restate the most useful lesson about {idea}.",
+            "call_to_action": (
+                "Invite viewers to share their situation or try the most relevant next step."
+            ),
+        },
+        "delivery_notes": [
+            "Use your own words and natural speaking style.",
+            "Prefer concrete examples over broad claims.",
+            "Keep the pace focused on the viewer's promised outcome.",
+        ],
+        "facts_to_verify": [],
+        "estimated_duration_minutes": 8,
     }
 
 
@@ -740,34 +963,49 @@ def detect_thumbnail_subjects(
     return subjects[:3]
 
 
-def build_viewer_intent(*, keywords: list[str], content_type: str) -> str:
+def build_viewer_intent(
+    *,
+    keywords: list[str],
+    content_type: str,
+    search_suggestions: list[str] | None = None,
+) -> str:
     topic = keywords[0] if keywords else "this topic"
+    search_suggestions = normalize_string_list(search_suggestions or [])
+    audience_subject = "people"
+    if search_suggestions:
+        exact_searches = ", ".join(search_suggestions[:3])
+        audience_subject = (
+            f"people are searching YouTube for {exact_searches}; they"
+        )
+
     if "tool recommendation" in content_type:
-        return f"people want the best {topic} options and practical reasons to use them"
+        return f"{audience_subject} want the best options and practical reasons to use them"
     if "tutorial" in content_type:
-        return f"people want a clear step-by-step way to use {topic}"
+        return f"{audience_subject} want a clear step-by-step way to use {topic}"
     if "comparison" in content_type:
-        return f"people want to compare {topic} options before choosing one"
+        return f"{audience_subject} want to compare {topic} options before choosing one"
     if "warning" in content_type:
-        return f"people want to avoid mistakes and risks around {topic}"
+        return f"{audience_subject} want to avoid mistakes and risks around {topic}"
     if "news" in content_type:
-        return f"people want the latest update and why {topic} matters now"
-    return f"people want a clear explanation of {topic} and what to do next"
+        return f"{audience_subject} want the latest update and why {topic} matters now"
+    return f"{audience_subject} want a clear explanation of {topic} and what to do next"
 
 
 def extract_seo_keywords(
     *,
     idea: str,
     videos: list[dict[str, Any]],
+    search_suggestions: list[str] | None = None,
 ) -> list[str]:
+    search_suggestions = normalize_string_list(search_suggestions or [])
     keyword_counter: Counter[str] = Counter()
     phrase_counter: Counter[str] = Counter()
 
-    for source in [idea] + [video["title"] for video in videos]:
+    for source in [idea] + search_suggestions + [video["title"] for video in videos]:
         words = [
             word
             for word in re.findall(r"[a-zA-Z0-9]+", source.lower())
-            if word not in STOP_WORDS and len(word) > 2
+            if word not in STOP_WORDS and (len(word) > 2 or word == "ai")
         ]
         keyword_counter.update(words)
         for index in range(len(words) - 1):
@@ -780,12 +1018,22 @@ def extract_seo_keywords(
             normalized_tag = " ".join(
                 word
                 for word in re.findall(r"[a-zA-Z0-9]+", tag.lower())
-                if word not in STOP_WORDS and len(word) > 2
+                if word not in STOP_WORDS and (len(word) > 2 or word == "ai")
             )
             if normalized_tag:
                 phrase_counter[normalized_tag] += 2
 
-    keywords = [
+    exact_search_keywords = []
+    for suggestion in search_suggestions[:3]:
+        normalized_suggestion = " ".join(
+            word
+            for word in re.findall(r"[a-zA-Z0-9]+", suggestion.lower())
+            if word not in STOP_WORDS and (len(word) > 2 or word == "ai")
+        )
+        if normalized_suggestion:
+            exact_search_keywords.append(normalized_suggestion)
+
+    keywords = exact_search_keywords + [
         phrase
         for phrase, _count in phrase_counter.most_common(10)
         if len(phrase.split()) > 1
