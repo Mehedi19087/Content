@@ -94,7 +94,12 @@ def _signed_body(body: dict, secret: str = "test-secret") -> tuple[bytes, str]:
 # Base setup: authorize webhook secret + seed Free + Pro + Creator plans
 # ----------------------------------------------------------------------
 
-@override_settings(LEMON_SQUEEZY_WEBHOOK_SECRET="test-secret", LEMON_SQUEEZY_API_KEY="test-key")
+@override_settings(
+    LEMON_SQUEEZY_WEBHOOK_SECRET="test-secret",
+    LEMON_SQUEEZY_API_KEY="test-key",
+    FRONTEND_BILLING_SUCCESS_URL="https://web.example.com/billing/success",
+    MOBILE_BILLING_SUCCESS_URL="creatorintent://billing/success",
+)
 class BillingTestCase(APITestCase):
     @classmethod
     def setUpTestData(cls):
@@ -182,6 +187,42 @@ class WebhookIdempotencyTests(BillingTestCase):
         self.assertEqual(second, "skipped")
         self.assertEqual(WebhookEvent.objects.filter(event_id="evt_dup").count(), 1)
         self.assertEqual(Subscription.objects.filter(user=self.user).count(), 1)
+
+    def test_failed_webhook_returns_500_and_retries_same_event(self):
+        payload = {
+            "meta": {"event_name": "temporary_failure", "event_id": "evt_retry"},
+            "data": {"id": "sub_retry", "attributes": {}},
+        }
+        raw, sig = _signed_body(payload)
+
+        failing_handler = Mock(side_effect=RuntimeError("temporary failure"))
+        with patch.dict(EVENT_HANDLERS, {"temporary_failure": failing_handler}):
+            first = self.client.post(
+                reverse("billing-webhook"),
+                data=raw,
+                content_type="application/json",
+                HTTP_X_SIGNATURE=sig,
+            )
+
+        self.assertEqual(first.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        event = WebhookEvent.objects.get(event_id="evt_retry")
+        self.assertFalse(event.processed)
+        self.assertIn("temporary failure", event.error)
+
+        successful_handler = Mock()
+        with patch.dict(EVENT_HANDLERS, {"temporary_failure": successful_handler}):
+            second = self.client.post(
+                reverse("billing-webhook"),
+                data=raw,
+                content_type="application/json",
+                HTTP_X_SIGNATURE=sig,
+            )
+
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        event.refresh_from_db()
+        self.assertTrue(event.processed)
+        self.assertEqual(event.error, "")
+        successful_handler.assert_called_once()
 
 
 # ----------------------------------------------------------------------
@@ -317,6 +358,18 @@ class RecomputeEntitlementTests(BillingTestCase):
 # ----------------------------------------------------------------------
 
 class CheckoutViewTests(BillingTestCase):
+    @override_settings(LEMON_SQUEEZY_WEBHOOK_SECRET="")
+    @patch("billing.services.LemonSqueezyClient.create_checkout")
+    def test_checkout_refuses_payment_when_webhook_is_not_configured(self, mock_create):
+        response = self.client.post(
+            reverse("billing-checkout"),
+            {"plan_slug": "pro", "platform": "web"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        mock_create.assert_not_called()
+
     @patch("billing.services.LemonSqueezyClient.create_checkout")
     def test_checkout_returns_url_and_carries_user_id(self, mock_create):
         mock_create.return_value = {
@@ -342,7 +395,6 @@ class CheckoutViewTests(BillingTestCase):
         with override_settings(
             MOBILE_BILLING_SUCCESS_URL="myapp://billing-done",
             FRONTEND_BILLING_SUCCESS_URL="https://web.example.com/done",
-            FRONTEND_BILLING_CANCEL_URL="https://web.example.com/cancel",
         ):
             mock_create.return_value = {"data": {"attributes": {"url": "https://checkout.example.com/abc"}}}
             self.client.post(

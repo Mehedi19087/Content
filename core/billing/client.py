@@ -66,7 +66,6 @@ class LemonSqueezyClient:
         variant_id: str,
         custom_data: dict[str, Any] | None = None,
         redirect_url: str | None = None,
-        cancel_url: str | None = None,
         email: str | None = None,
         name: str | None = None,
     ) -> dict[str, Any]:

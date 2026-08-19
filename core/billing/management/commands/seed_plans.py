@@ -9,8 +9,8 @@ copy their variant ids into the environment.
 Env vars expected (one per tier):
     STARTER_VARIANT_ID
     PRO_VARIANT_ID
-    CREATOR_VARIANT_ID
-    (optional) STARTER_PRODUCT_ID / PRO_PRODUCT_ID / CREATOR_PRODUCT_ID
+    ULTRA_VARIANT_ID (CREATOR_VARIANT_ID is accepted during migration)
+    Yearly variants use the corresponding *_YEARLY_VARIANT_ID names.
 
 Group <-> Plan mapping (matches the tier hierarchy in users/permissions.py):
 
@@ -18,7 +18,7 @@ Group <-> Plan mapping (matches the tier hierarchy in users/permissions.py):
     ---------+----------------+---------------------------------------
     starter  | Starter Users  | ideas/refresh, ideas/youtube-intent
     pro      | Pro Users       | + ideas/thumbnail-preparation, youtube/* (channel ops)
-    creator  | Creator Users  | + ideas/generate-package
+    ultra    | Ultra Users    | + ideas/generate-package
 
 Free Users is the default group; no Plan row is needed for it.
 """
@@ -26,7 +26,7 @@ Free Users is the default group; no Plan row is needed for it.
 import os
 
 from django.contrib.auth.models import Group
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from billing.models import Plan
 
@@ -37,9 +37,9 @@ TIER_DEFS = [
         "name": "Starter",
         "description": "Generate fresh trending ideas and YouTube intent research.",
         "group": "Starter Users",
-        "variant_env": "STARTER_VARIANT_ID",
-        "product_env": "STARTER_PRODUCT_ID",
-        "price_cents": 1900,
+        "variant_envs": ["STARTER_VARIANT_ID"],
+        "product_envs": ["STARTER_PRODUCT_ID"],
+        "price_cents": 999,
         "interval": Plan.Interval.MONTH,
         "sort_order": 1,
     },
@@ -48,66 +48,118 @@ TIER_DEFS = [
         "name": "Pro",
         "description": "Thumbnail preparation + YouTube channel connection and analysis.",
         "group": "Pro Users",
-        "variant_env": "PRO_VARIANT_ID",
-        "product_env": "PRO_PRODUCT_ID",
-        "price_cents": 4900,
+        "variant_envs": ["PRO_VARIANT_ID"],
+        "product_envs": ["PRO_PRODUCT_ID"],
+        "price_cents": 1999,
         "interval": Plan.Interval.MONTH,
         "sort_order": 2,
     },
     {
-        "slug": "creator",
-        "name": "Creator",
+        "slug": "ultra",
+        "name": "Ultra",
         "description": "Full packaging pipeline + final thumbnail image generation.",
-        "group": "Creator Users",
-        "variant_env": "CREATOR_VARIANT_ID",
-        "product_env": "CREATOR_PRODUCT_ID",
-        "price_cents": 9900,
+        "group": "Ultra Users",
+        "variant_envs": ["ULTRA_VARIANT_ID", "CREATOR_VARIANT_ID"],
+        "product_envs": ["ULTRA_PRODUCT_ID", "CREATOR_PRODUCT_ID"],
+        "price_cents": 3499,
         "interval": Plan.Interval.MONTH,
         "sort_order": 3,
     },
 ]
+
+YEARLY_TIER_DEFS = [
+    {
+        "slug": "starter-yearly",
+        "name": "Starter (Yearly)",
+        "description": "Generate fresh trending ideas and YouTube intent research (billed annually).",
+        "group": "Starter Users",
+        "variant_envs": ["STARTER_YEARLY_VARIANT_ID"],
+        "product_envs": ["STARTER_PRODUCT_ID"],
+        "price_cents": 7999,
+        "interval": Plan.Interval.YEAR,
+        "sort_order": 4,
+    },
+    {
+        "slug": "pro-yearly",
+        "name": "Pro (Yearly)",
+        "description": "Thumbnail preparation + YouTube channel connection and analysis (billed annually).",
+        "group": "Pro Users",
+        "variant_envs": ["PRO_YEARLY_VARIANT_ID"],
+        "product_envs": ["PRO_PRODUCT_ID"],
+        "price_cents": 19199,
+        "interval": Plan.Interval.YEAR,
+        "sort_order": 5,
+    },
+    {
+        "slug": "ultra-yearly",
+        "name": "Ultra (Yearly)",
+        "description": "Full packaging pipeline + final thumbnail image generation (billed annually).",
+        "group": "Ultra Users",
+        "variant_envs": ["ULTRA_YEARLY_VARIANT_ID", "CREATOR_YEARLY_VARIANT_ID"],
+        "product_envs": ["ULTRA_PRODUCT_ID", "CREATOR_PRODUCT_ID"],
+        "price_cents": 33599,
+        "interval": Plan.Interval.YEAR,
+        "sort_order": 6,
+    },
+]
+
+
+def _get_first_env(names: list[str]) -> str:
+    for name in names:
+        val = os.getenv(name)
+        if val and val.strip():
+            return val.strip()
+    return ""
+
+
+def _upsert_plan(definition: dict) -> tuple[Plan, bool]:
+    variant_id = _get_first_env(definition["variant_envs"])
+    product_id = _get_first_env(definition["product_envs"])
+    plan = (
+        Plan.objects.filter(lemon_variant_id=variant_id).first()
+        or Plan.objects.filter(slug=definition["slug"]).first()
+    )
+    created = plan is None
+    if plan is None:
+        plan = Plan()
+
+    plan.slug = definition["slug"]
+    plan.name = definition["name"]
+    plan.description = definition["description"]
+    plan.group = definition["group"]
+    plan.lemon_product_id = product_id
+    plan.lemon_variant_id = variant_id
+    plan.price_usd_cents = definition["price_cents"]
+    plan.interval = definition["interval"]
+    plan.is_active = True
+    plan.sort_order = definition["sort_order"]
+    plan.save()
+    return plan, created
 
 
 class Command(BaseCommand):
     help = "Seed billing plans and create the auth groups they map to."
 
     def handle(self, *args, **kwargs):
-        missing = []
-        for tier in TIER_DEFS:
-            if not os.getenv(tier["variant_env"]):
-                missing.append(tier["variant_env"])
+        definitions = TIER_DEFS + YEARLY_TIER_DEFS
+        missing = [
+            "/".join(tier["variant_envs"])
+            for tier in definitions
+            if not _get_first_env(tier["variant_envs"])
+        ]
 
         if missing:
-            self.stdout.write(
-                self.style.ERROR(
-                    "Missing env vars: " + ", ".join(missing) + ". "
-                    "Create the product and variants in Lemon Squeezy first, "
-                    "then set the variant ids in your environment and rerun."
-                )
+            raise CommandError(
+                "Cannot seed billing plans. Missing env vars: " + ", ".join(missing)
             )
-            return
 
-        # Free group is the fallback used by recompute_user_entitlement.
-        Group.objects.get_or_create(name="Free Users")
+        group_names = {"Free Users", "Creator Users"}
+        group_names.update(tier["group"] for tier in definitions)
+        for group_name in group_names:
+            Group.objects.get_or_create(name=group_name)
 
-        for tier in TIER_DEFS:
-            Group.objects.get_or_create(name=tier["group"])
-            variant_id = os.getenv(tier["variant_env"])
-            product_id = os.getenv(tier["product_env"], "")
-            plan, created = Plan.objects.update_or_create(
-                slug=tier["slug"],
-                defaults={
-                    "name": tier["name"],
-                    "description": tier["description"],
-                    "group": tier["group"],
-                    "lemon_product_id": product_id,
-                    "lemon_variant_id": variant_id,
-                    "price_usd_cents": tier["price_cents"],
-                    "interval": tier["interval"],
-                    "is_active": True,
-                    "sort_order": tier["sort_order"],
-                },
-            )
+        for tier in definitions:
+            plan, created = _upsert_plan(tier)
             action = "created" if created else "updated"
             self.stdout.write(
                 self.style.SUCCESS(

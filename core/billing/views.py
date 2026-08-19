@@ -6,8 +6,7 @@ that does serializer.is_valid() + service call + Response(...).
 The webhook view is special:
   - public (no JWT), like the Google callback in users/views.py
   - must verify the HMAC signature before ANY parsing (request.body must stay raw)
-  - always returns 200 for known events, even unknown event_names (LS retries
-    on non-2xx, and we already logged + flagged unknown events in the audit row)
+  - returns a non-2xx response when processing fails so Lemon Squeezy retries
 """
 
 import json
@@ -86,10 +85,7 @@ class CheckoutAPIView(APIView):
         except Exception as exc:
             logger.exception("billing.checkout.failed user=%s", request.user.id)
             return Response(
-                {
-                    "message": "Failed to start checkout.",
-                    "detail": str(exc),
-                },
+                {"message": "Failed to start checkout."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
@@ -130,7 +126,7 @@ class PortalAPIView(APIView):
         except Exception as exc:
             logger.exception("billing.portal.failed user=%s", request.user.id)
             return Response(
-                {"message": "Failed to open billing portal.", "detail": str(exc)},
+                {"message": "Failed to open billing portal."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
@@ -159,7 +155,7 @@ class CancelAPIView(APIView):
         except Exception as exc:
             logger.exception("billing.cancel.failed user=%s", request.user.id)
             return Response(
-                {"message": "Failed to cancel subscription.", "detail": str(exc)},
+                {"message": "Failed to cancel subscription."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
@@ -168,10 +164,8 @@ class WebhookAPIView(APIView):
     """
     POST /api/billing/webhook/ — Lemon Squeezy forwards events here.
     Public (no JWT). Signature is verified BEFORE parsing the body so forged
-    events can never reach the dispatcher. Always returns 200 for parsed
-    events (LS only retries on non-2xx; failed handlers are recorded to the
-    WebhookEvent.row.error and can be either retried by LS or replayed by an
-    admin via the dashboard).
+    events can never reach the dispatcher. Processing failures return 500 so
+    Lemon Squeezy retries the same idempotency key.
     """
 
     authentication_classes = []
@@ -207,6 +201,12 @@ class WebhookAPIView(APIView):
             return Response(
                 {"message": "validation error", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if result == "failed":
+            return Response(
+                {"message": "webhook processing failed", "event_id": event_id},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         return Response(

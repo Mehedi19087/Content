@@ -347,16 +347,24 @@ def handle_webhook_event(event_id: str, event_name: str, payload: dict[str, Any]
     if not event_id:
         raise ValidationError({"event_id": "Webhook payload is missing event_id."})
 
-    existing = WebhookEvent.objects.filter(event_id=event_id).first()
-    if existing is not None:
+    event, created = WebhookEvent.objects.get_or_create(
+        event_id=event_id,
+        defaults={
+            "event_name": event_name,
+            "payload": payload,
+            "processed": False,
+        },
+    )
+    if not created and event.processed:
         return "skipped"
 
-    event = WebhookEvent.objects.create(
-        event_id=event_id,
-        event_name=event_name,
-        payload=payload,
-        processed=False,
-    )
+    if not created:
+        # Lemon Squeezy retries non-2xx deliveries. Reuse the audit row so a
+        # transient processing failure can be attempted again safely.
+        event.event_name = event_name
+        event.payload = payload
+        event.error = ""
+        event.save(update_fields=["event_name", "payload", "error"])
 
     handler = EVENT_HANDLERS.get(event_name)
     if handler is None:
@@ -367,7 +375,10 @@ def handle_webhook_event(event_id: str, event_name: str, payload: dict[str, Any]
         return "unknown"
 
     try:
-        handler(event, payload)
+        # Roll back partial subscription/entitlement writes if a handler fails,
+        # while preserving the outer audit row for the next delivery attempt.
+        with transaction.atomic():
+            handler(event, payload)
     except Exception as exc:
         event.error = str(exc)
         event.save(update_fields=["error"])
@@ -410,7 +421,18 @@ def get_plans():
 
 
 def create_checkout_url(*, user, plan_slug: str, platform: str = "web") -> str:
-    plan = Plan.objects.filter(slug=plan_slug, is_active=True).first()
+    if not settings.LEMON_SQUEEZY_WEBHOOK_SECRET:
+        raise BillingConfigurationError(
+            "LEMON_SQUEEZY_WEBHOOK_SECRET is not configured."
+        )
+
+    slug = (plan_slug or "").strip().lower()
+    plan = Plan.objects.filter(slug=slug, is_active=True).first()
+    if plan is None and slug == "creator":
+        plan = Plan.objects.filter(slug="ultra", is_active=True).first()
+    elif plan is None and slug == "ultra":
+        plan = Plan.objects.filter(slug="creator", is_active=True).first()
+
     if plan is None:
         raise NotFound("Plan not found.")
 
@@ -419,7 +441,10 @@ def create_checkout_url(*, user, plan_slug: str, platform: str = "web") -> str:
         if platform == "mobile"
         else settings.FRONTEND_BILLING_SUCCESS_URL
     )
-    cancel_url = settings.FRONTEND_BILLING_CANCEL_URL
+    if not success_url:
+        raise BillingConfigurationError(
+            "The billing success URL is not configured for this platform."
+        )
 
     custom_data = {"user_id": str(user.id), "plan_slug": plan.slug}
 
@@ -428,7 +453,6 @@ def create_checkout_url(*, user, plan_slug: str, platform: str = "web") -> str:
         variant_id=plan.lemon_variant_id,
         custom_data=custom_data,
         redirect_url=success_url or None,
-        cancel_url=cancel_url or None,
         email=getattr(user, "email", None) or None,
         name=(f"{user.first_name} {user.last_name}".strip() or None),
     )

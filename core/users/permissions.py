@@ -69,15 +69,19 @@ class HasTierPermission(permissions.BasePermission):
 
 
 class HasStarterPermission(HasTierPermission):
-    """Starter + Pro + Creator all unlock Starter-tier features."""
-    ALLOWED_GROUPS = ("Starter Users", "Pro Users", "Creator Users")
+    """Starter + Pro + Ultra/Creator all unlock Starter-tier features."""
+    ALLOWED_GROUPS = ("Starter Users", "Pro Users", "Ultra Users", "Creator Users")
 
 
 class HasProPermission(HasTierPermission):
-    """Pro + Creator unlock Pro-tier features."""
-    ALLOWED_GROUPS = ("Pro Users", "Creator Users")
+    """Pro + Ultra/Creator unlock Pro-tier features."""
+    ALLOWED_GROUPS = ("Pro Users", "Ultra Users", "Creator Users")
 
 
 class HasCreatorPermission(HasTierPermission):
-    """Only the Creator tier unlocks Creator-tier features (e.g. AI image gen)."""
-    ALLOWED_GROUPS = ("Creator Users",)
+    """Only the Ultra/Creator tier unlocks top-tier features (e.g. AI image gen)."""
+    ALLOWED_GROUPS = ("Ultra Users", "Creator Users")
+
+
+# Alias for Ultra tier
+HasUltraPermission = HasCreatorPermission
