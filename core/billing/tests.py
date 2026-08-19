@@ -24,7 +24,7 @@ import hmac
 import json
 import os
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -525,6 +525,52 @@ class TierPermissionHierarchyTests(APITestCase):
 # ----------------------------------------------------------------------
 
 class ClientConfigTests(BillingTestCase):
+    @patch("billing.client.requests.request")
+    def test_create_checkout_uses_lemon_squeezy_json_api_schema(self, mock_request):
+        from billing.client import LemonSqueezyClient
+
+        response = Mock()
+        response.status_code = 201
+        response.content = b'{"data":{"attributes":{"url":"https://example.com"}}}'
+        response.json.return_value = {
+            "data": {"attributes": {"url": "https://example.com"}}
+        }
+        mock_request.return_value = response
+
+        LemonSqueezyClient(api_key="test-key", store_id="123").create_checkout(
+            variant_id="456",
+            custom_data={"user_id": "7", "plan_slug": "pro"},
+            redirect_url="https://creatorintent.com/billing/success",
+            email="creator@example.com",
+            name="Test Creator",
+        )
+
+        payload = mock_request.call_args.kwargs["json"]["data"]
+        attributes = payload["attributes"]
+        self.assertNotIn("custom_data", attributes)
+        self.assertNotIn("email", attributes)
+        self.assertNotIn("name", attributes)
+        self.assertEqual(
+            attributes["checkout_data"],
+            {
+                "custom": {"user_id": "7", "plan_slug": "pro"},
+                "email": "creator@example.com",
+                "name": "Test Creator",
+            },
+        )
+        self.assertEqual(
+            attributes["product_options"],
+            {"redirect_url": "https://creatorintent.com/billing/success"},
+        )
+        self.assertNotIn("checkout_options", attributes)
+        self.assertEqual(
+            payload["relationships"],
+            {
+                "store": {"data": {"type": "stores", "id": "123"}},
+                "variant": {"data": {"type": "variants", "id": "456"}},
+            },
+        )
+
     def test_missing_api_key_raises_configuration_error(self):
         # Strip every key source (env AND settings override from the test class).
         from billing.client import LemonSqueezyClient

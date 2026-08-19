@@ -75,25 +75,39 @@ class LemonSqueezyClient:
         echoed back in webhook payloads, so we use it to carry our user_id +
         plan_slug. Returns the raw checkout object from LS.
         """
+        if not self.store_id:
+            raise BillingConfigurationError("LEMON_SQUEEZY_STORE_ID is not configured.")
+
+        checkout_data: dict[str, Any] = {}
+        if custom_data is not None:
+            checkout_data["custom"] = custom_data
+        if email:
+            checkout_data["email"] = email
+        if name:
+            checkout_data["name"] = name
+
         payload: dict[str, Any] = {
             "data": {
                 "type": "checkouts",
                 "attributes": {
-                    "product_options": {"redirect_url": redirect_url, "enabled_variants": [variant_id]},
-                    "checkout_options": {"embed": False, "dark": False},
+                    "checkout_data": checkout_data,
                     "preview": False,
+                },
+                "relationships": {
+                    "store": {
+                        "data": {"type": "stores", "id": str(self.store_id)},
+                    },
+                    "variant": {
+                        "data": {"type": "variants", "id": str(variant_id)},
+                    },
                 },
             }
         }
 
-        if custom_data is not None:
-            payload["data"]["attributes"]["custom_data"] = custom_data
-        if email:
-            payload["data"]["attributes"]["email"] = email
-        if name:
-            payload["data"]["attributes"]["name"] = name
-        if cancel_url:
-            payload["data"]["attributes"]["product_options"]["cancel_url"] = cancel_url
+        if redirect_url:
+            payload["data"]["attributes"]["product_options"] = {
+                "redirect_url": redirect_url,
+            }
 
         response = self._request("POST", "/checkouts", json=payload)
         return response
