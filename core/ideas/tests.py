@@ -175,6 +175,26 @@ class IdeasAPITestCase(APITestCase):
         self.assertEqual(len(response.data["data"]), 1)
         self.assertEqual(response.data["data"][0]["title"], self.idea.title)
 
+    def test_idea_refresh_preflight_allows_frontend_preview_origins(self):
+        url = reverse("ideas-refresh")
+        origins = (
+            "http://localhost:5173",
+            "https://id-preview-123.lovable.app",
+            "https://creator-intent-git-main.vercel.app",
+        )
+
+        for origin in origins:
+            with self.subTest(origin=origin):
+                response = self.client.options(
+                    url,
+                    HTTP_ORIGIN=origin,
+                    HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+                    HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization,content-type",
+                )
+
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(response["Access-Control-Allow-Origin"], origin)
+
     def test_list_trending_ideas_invalid_category(self):
         url = reverse("ideas-trending")
         response = self.client.get(

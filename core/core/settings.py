@@ -83,6 +83,19 @@ CORS_ALLOWED_ORIGINS = [
     ).split(',')
     if origin.strip()
 ]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    pattern.strip()
+    for pattern in os.getenv(
+        'CORS_ALLOWED_ORIGIN_REGEXES',
+        (
+            r'^http://localhost:\d+$,'
+            r'^http://127\.0\.0\.1:\d+$,'
+            r'^https://[a-z0-9-]+\.lovable\.app$,'
+            r'^https://[a-z0-9-]+\.vercel\.app$'
+        ),
+    ).split(',')
+    if pattern.strip()
+]
 CORS_ALLOW_CREDENTIALS = True
 CORS_EXPOSE_HEADERS = ['Content-Type', 'Authorization']
 CORS_ALLOW_HEADERS = [
