@@ -1,4 +1,6 @@
 import json
+from io import BytesIO
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -21,6 +23,7 @@ from .services import (
     validate_generated_ideas,
 )
 from .youtube_suggest_client import YouTubeSuggestClient
+from .youtube_client import YouTubeAPIError, YouTubeClient
 
 User = get_user_model()
 
@@ -59,7 +62,13 @@ class DeepSeekClientTestCase(APITestCase):
 
 
 class GroqClientTestCase(APITestCase):
-    @override_settings(GROQ_TIMEOUT_SECONDS=60)
+    @override_settings(
+        GROQ_TIMEOUT_SECONDS=60,
+        GROQ_REASONING_EFFORT="low",
+        GROQ_MAX_COMPLETION_TOKENS=2048,
+        GROQ_RATE_LIMIT_RETRIES=1,
+        GROQ_MAX_RETRY_WAIT_SECONDS=30,
+    )
     @patch("ideas.groq_client.urllib.request.urlopen")
     def test_generate_json_uses_current_groq_model(self, mock_urlopen):
         response = MagicMock()
@@ -83,7 +92,49 @@ class GroqClientTestCase(APITestCase):
             "https://api.groq.com/openai/v1/chat/completions",
         )
         self.assertEqual(request_body["model"], "openai/gpt-oss-120b")
+        self.assertEqual(request_body["reasoning_effort"], "low")
+        self.assertEqual(request_body["max_completion_tokens"], 2048)
         self.assertEqual(result, {"ideas": []})
+
+    @override_settings(
+        GROQ_TIMEOUT_SECONDS=60,
+        GROQ_REASONING_EFFORT="low",
+        GROQ_MAX_COMPLETION_TOKENS=2048,
+        GROQ_RATE_LIMIT_RETRIES=1,
+        GROQ_MAX_RETRY_WAIT_SECONDS=30,
+    )
+    @patch("ideas.groq_client.time.sleep")
+    @patch("ideas.groq_client.urllib.request.urlopen")
+    def test_generate_json_retries_short_rate_limit(
+        self,
+        mock_urlopen,
+        mock_sleep,
+    ):
+        rate_limit_error = urllib.error.HTTPError(
+            url="https://api.groq.com/openai/v1/chat/completions",
+            code=429,
+            msg="Too Many Requests",
+            hdrs={"Retry-After": "2.5"},
+            fp=BytesIO(b'{"error":{"message":"Rate limited"}}'),
+        )
+        response = MagicMock()
+        response.read.return_value = (
+            b'{"choices":[{"message":{"content":"{\\"ideas\\": []}"}}]}'
+        )
+        mock_urlopen.side_effect = [rate_limit_error, response]
+        response.__enter__.return_value = response
+
+        result = GroqClient(
+            api_key="groq-key",
+            model="openai/gpt-oss-120b",
+        ).generate_json(
+            system_prompt="Return JSON.",
+            user_payload={"topic": "AI tools"},
+        )
+
+        self.assertEqual(result, {"ideas": []})
+        mock_sleep.assert_called_once_with(2.5)
+        self.assertEqual(mock_urlopen.call_count, 2)
 
 
 class TextGenerationClientTestCase(APITestCase):
@@ -123,6 +174,40 @@ class TextGenerationClientTestCase(APITestCase):
 
         self.assertEqual(result, {"source": "groq"})
         mock_groq_client.return_value.generate_json.assert_called_once()
+
+
+class YouTubeClientTestCase(APITestCase):
+    def test_popular_videos_skip_unavailable_category_chart(self):
+        client = YouTubeClient(api_key="youtube-key")
+        client._get = MagicMock(
+            side_effect=[
+                YouTubeAPIError("Chart unavailable", upstream_status_code=404),
+                {"items": [{"id": "video-1"}]},
+            ]
+        )
+
+        videos = client.fetch_most_popular_videos(
+            category_ids=["27", "25"],
+            region_code="US",
+        )
+
+        self.assertEqual([video["id"] for video in videos], ["video-1"])
+        self.assertEqual(client._get.call_count, 2)
+
+    def test_popular_videos_do_not_hide_other_youtube_errors(self):
+        client = YouTubeClient(api_key="youtube-key")
+        client._get = MagicMock(
+            side_effect=YouTubeAPIError(
+                "Quota exceeded",
+                upstream_status_code=403,
+            )
+        )
+
+        with self.assertRaises(YouTubeAPIError):
+            client.fetch_most_popular_videos(
+                category_ids=["27"],
+                region_code="US",
+            )
 
 
 class IdeasAPITestCase(APITestCase):

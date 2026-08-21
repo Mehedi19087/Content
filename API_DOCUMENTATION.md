@@ -673,7 +673,10 @@ DeepSeek text generation requires `DEEPSEEK_API_KEY`. `DEEPSEEK_MODEL` defaults
 to `deepseek-v4-flash`, and `DEEPSEEK_TIMEOUT_SECONDS` defaults to `60`.
 If DeepSeek fails, the application retries once through Groq. The fallback requires
 `GROQ_API_KEY`; `GROQ_MODEL` defaults to `openai/gpt-oss-120b`, and
-`GROQ_TIMEOUT_SECONDS` defaults to `60`.
+`GROQ_TIMEOUT_SECONDS` defaults to `60`. GPT-OSS fallback requests use low
+reasoning effort and a 2,048-token completion limit by default; override these
+with `GROQ_REASONING_EFFORT` and `GROQ_MAX_COMPLETION_TOKENS` if needed. Short
+HTTP 429 rate limits are retried once using Groq's requested wait time.
 
 Cloudinary thumbnail storage requires `CLOUDINARY_CLOUD_NAME`,
 `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` in the backend environment.

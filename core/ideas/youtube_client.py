@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -10,6 +12,13 @@ from rest_framework.exceptions import ValidationError
 
 
 YOUTUBE_API_BASE_URL = "https://www.googleapis.com/youtube/v3"
+logger = logging.getLogger(__name__)
+
+
+class YouTubeAPIError(ValidationError):
+    def __init__(self, message: str, *, upstream_status_code: int | None = None):
+        self.upstream_status_code = upstream_status_code
+        super().__init__({"youtube_api": message})
 
 
 class YouTubeClient:
@@ -30,16 +39,27 @@ class YouTubeClient:
         videos: list[dict[str, Any]] = []
 
         for category_id in category_ids:
-            data = self._get(
-                "videos",
-                {
-                    "part": "snippet,statistics,contentDetails",
-                    "chart": "mostPopular",
-                    "regionCode": region_code,
-                    "videoCategoryId": category_id,
-                    "maxResults": max_results,
-                },
-            )
+            try:
+                data = self._get(
+                    "videos",
+                    {
+                        "part": "snippet,statistics,contentDetails",
+                        "chart": "mostPopular",
+                        "regionCode": region_code,
+                        "videoCategoryId": category_id,
+                        "maxResults": max_results,
+                    },
+                )
+            except YouTubeAPIError as exc:
+                if exc.upstream_status_code != 404:
+                    raise
+                logger.warning(
+                    "YouTube most-popular chart unavailable; continuing with "
+                    "remaining charts and keyword search. category_id=%s region=%s",
+                    category_id,
+                    region_code,
+                )
+                continue
             for item in data.get("items", []):
                 item["_source_type"] = "most_popular"
                 item["_matched_keyword"] = ""
@@ -156,7 +176,28 @@ class YouTubeClient:
         try:
             with urllib.request.urlopen(url, timeout=30) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            response_body = exc.read().decode("utf-8", errors="replace")
+            upstream_message = _get_youtube_error_message(response_body)
+            raise YouTubeAPIError(
+                (
+                    f"YouTube API returned HTTP {exc.code} for {endpoint}: "
+                    f"{upstream_message}"
+                ),
+                upstream_status_code=exc.code,
+            ) from exc
         except Exception as exc:
-            raise ValidationError(
-                {"youtube_api": f"Failed to fetch YouTube data: {exc}"}
-            )
+            raise YouTubeAPIError(
+                f"Failed to fetch YouTube data from {endpoint}: {exc}"
+            ) from exc
+
+
+def _get_youtube_error_message(response_body: str) -> str:
+    try:
+        payload = json.loads(response_body)
+        message = payload.get("error", {}).get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return response_body[:500] or "Unknown YouTube API error."
