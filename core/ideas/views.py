@@ -122,6 +122,7 @@ class YouTubeIntentResearchAPIView(APIView):
         except ValidationError as exc:
             raise exc
         except Exception as exc:
+            logger.exception("ideas.research.unexpected_failure")
             return Response(
                 {
                     "message": "Failed to research YouTube intent due to an internal server error.",
@@ -151,6 +152,7 @@ class ThumbnailPreparationAPIView(APIView):
         except ValidationError as exc:
             raise exc
         except Exception as exc:
+            logger.exception("ideas.thumbnail_preparation.unexpected_failure")
             return Response(
                 {
                     "message": "Failed to prepare thumbnail due to an internal server error.",
@@ -180,6 +182,7 @@ class GeneratePackageAPIView(APIView):
         except ValidationError as exc:
             raise exc
         except Exception as exc:
+            logger.exception("ideas.package.unexpected_failure")
             return Response(
                 {
                     "message": "Failed to generate content package due to an internal server error.",
