@@ -19,7 +19,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import NotFound, ValidationError
 
-from ideas.groq_client import GroqClient
+from ideas.llm_client import TextGenerationClient
 
 from .exceptions import (
     YouTubeAPIError,
@@ -212,7 +212,7 @@ def analyze_youtube_channel(
     *,
     user_id: int,
     youtube_client: ConnectedYouTubeClient | None = None,
-    groq_client: GroqClient | None = None,
+    llm_client: TextGenerationClient | None = None,
     now: datetime | None = None,
 ) -> tuple[YouTubeChannelAnalysis, bool]:
     channel = get_youtube_channel(user_id=user_id)
@@ -290,7 +290,7 @@ def analyze_youtube_channel(
     result["content_gaps"] = enhance_gap_explanations(
         gaps=result["content_gaps"],
         summary=result["summary"],
-        groq_client=groq_client,
+        llm_client=llm_client,
     )
     result["recommendations"] = [
         gap["recommendation"]
@@ -672,12 +672,12 @@ def enhance_gap_explanations(
     *,
     gaps: list[dict[str, Any]],
     summary: dict[str, Any],
-    groq_client: GroqClient | None,
+    llm_client: TextGenerationClient | None,
 ) -> list[dict[str, Any]]:
     if not gaps:
         return gaps
     try:
-        client = groq_client or GroqClient()
+        client = llm_client or TextGenerationClient()
         generated = client.generate_json(
             system_prompt=(
                 "You are a concise YouTube channel coach. Rewrite only the explanation and "

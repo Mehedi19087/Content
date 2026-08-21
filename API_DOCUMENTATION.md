@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. It helps YouTube content creators generate SEO metadata, trending video ideas, and thumbnail concepts using Groq LLM and OpenAI DALL-E.
+A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. It helps YouTube content creators generate SEO metadata, trending video ideas, and thumbnail concepts using DeepSeek and OpenAI image generation.
 
 **Base URL:** `https://api.creatorintent.com/api/`
 
@@ -349,7 +349,7 @@ category. `ideas/trending/` remains available as an alias.
 
 ## 7. POST `ideas/refresh/`
 
-Refresh trending ideas for a category by fetching new YouTube data and generating new ideas via Groq LLM.
+Refresh trending ideas for a category by fetching new YouTube data and generating new ideas via DeepSeek.
 
 **Request:**
 
@@ -663,10 +663,17 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
 | Service | Purpose | Client Module |
 |---------|---------|---------------|
 | YouTube Data API v3 | Fetch trending videos, search results | `youtube_client.py` |
-| Groq LLM | Generate video ideas, intent analysis, package plans | `groq_client.py` |
+| DeepSeek | Primary text generation provider | `deepseek_client.py` |
+| Groq | Backup text generation provider | `groq_client.py` |
 | OpenAI Image API | Generate thumbnail images | `openai_image_client.py` |
 | Cloudinary | Persist generated thumbnails and serve HTTPS URLs | `openai_image_client.py` |
 | Lemon Squeezy | Subscription billing, customer portal, webhooks | `billing/client.py` |
+
+DeepSeek text generation requires `DEEPSEEK_API_KEY`. `DEEPSEEK_MODEL` defaults
+to `deepseek-v4-flash`, and `DEEPSEEK_TIMEOUT_SECONDS` defaults to `60`.
+If DeepSeek fails, the application retries once through Groq. The fallback requires
+`GROQ_API_KEY`; `GROQ_MODEL` defaults to `openai/gpt-oss-120b`, and
+`GROQ_TIMEOUT_SECONDS` defaults to `60`.
 
 Cloudinary thumbnail storage requires `CLOUDINARY_CLOUD_NAME`,
 `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` in the backend environment.
@@ -678,7 +685,7 @@ Cloudinary thumbnail storage requires `CLOUDINARY_CLOUD_NAME`,
 The typical API usage follows this sequence:
 
 1. **Create Category** - `POST categories/`
-2. **Refresh Ideas** - `POST ideas/refresh/` (fetches YouTube data, generates ideas via Groq)
+2. **Refresh Ideas** - `POST ideas/refresh/` (fetches YouTube data, generates ideas via DeepSeek)
 3. **Get Trending Ideas** - `GET ideas/trending/` (list generated ideas)
 4. **Research Intent** - `POST ideas/youtube-intent/` (analyze a specific idea)
 5. **Prepare Thumbnail** - `POST ideas/thumbnail-preparation/` (generate hook cards and subject plans)

@@ -27,7 +27,7 @@ An AI-powered YouTube video packaging assistant for small and medium internation
 - **Primary Database**: PostgreSQL (Users, Subscriptions, Projects, Assets).
 - **Caching Layer**: Redis (Used with RDB snapshots to cache daily trending ideas to avoid rate limits and reduce latency).
 - **Vector Database (RAG)**: pgvector 
-- **LLM Provider**: groq api key
+- **LLM Provider**: DeepSeek API with Groq fallback
 - **Image Generation API**:OpenAI (DALL-E 3).
 - **Asset Storage**: cloudinary.
 

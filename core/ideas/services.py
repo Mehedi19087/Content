@@ -13,7 +13,7 @@ from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
 from categories.models import Category
-from .groq_client import GroqClient
+from .llm_client import TextGenerationClient
 from .models import IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .youtube_client import YouTubeClient
@@ -114,7 +114,7 @@ def refresh_ideas_for_category(
 
     scored_videos = score_videos(videos, category=category)
     clusters = cluster_videos(scored_videos, limit=limit)
-    ideas = generate_ideas_with_groq(
+    ideas = generate_ideas_with_llm(
         category=category,
         region_code=region_code,
         clusters=clusters,
@@ -375,7 +375,7 @@ def generate_content_package(
     creator_image_choice: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     creator_image_choice = creator_image_choice or {}
-    package_plan = generate_package_plan_with_groq(
+    package_plan = generate_package_plan_with_llm(
         idea=idea,
         youtube_intent=youtube_intent,
         selected_hook=selected_hook,
@@ -405,7 +405,7 @@ def generate_content_package(
     }
 
 
-def generate_package_plan_with_groq(
+def generate_package_plan_with_llm(
     *,
     idea: str,
     youtube_intent: dict[str, Any],
@@ -500,7 +500,7 @@ edit_options must be 4 short strings.
             "target_duration_minutes": 8,
         },
     }
-    generated = GroqClient().generate_json(
+    generated = TextGenerationClient().generate_json(
         system_prompt=system_prompt,
         user_payload=user_payload,
         temperature=0.25,
@@ -1331,7 +1331,7 @@ def get_cluster_key(video: dict[str, Any]) -> str:
     return slugify_phrase(" ".join(words[:3]))
 
 
-def generate_ideas_with_groq(
+def generate_ideas_with_llm(
     *,
     category: Category,
     region_code: str,
@@ -1391,7 +1391,7 @@ freshness must be LOW, MEDIUM, or HIGH.
         ],
     }
 
-    generated = GroqClient().generate_json(
+    generated = TextGenerationClient().generate_json(
         system_prompt=system_prompt,
         user_payload=user_payload,
     )
@@ -1531,7 +1531,9 @@ def fill_missing_ideas_from_clusters(
         existing_titles.add(fallback_idea["title"].lower())
 
     if not ideas:
-        raise ValidationError({"groq_response": "No valid idea candidates were created."})
+        raise ValidationError(
+            {"llm_response": "No valid idea candidates were created."}
+        )
 
     return ideas
 

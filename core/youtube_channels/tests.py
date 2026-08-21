@@ -142,7 +142,7 @@ class FakeYouTubeClient:
         ]
 
 
-class FakeGroqClient:
+class FakeTextGenerationClient:
     def generate_json(self, **kwargs):
         return {"gaps": []}
 
@@ -227,13 +227,13 @@ class YouTubeServiceTests(APITestCase):
         analysis, cached = analyze_youtube_channel(
             user_id=self.user.id,
             youtube_client=client,
-            groq_client=FakeGroqClient(),
+            llm_client=FakeTextGenerationClient(),
             now=FIXED_NOW,
         )
         cached_analysis, second_cached = analyze_youtube_channel(
             user_id=self.user.id,
             youtube_client=client,
-            groq_client=FakeGroqClient(),
+            llm_client=FakeTextGenerationClient(),
             now=FIXED_NOW + timedelta(minutes=20),
         )
 

@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -9,6 +10,9 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from categories.models import Category
+from .deepseek_client import DeepSeekClient
+from .groq_client import GroqClient
+from .llm_client import TextGenerationClient
 from .models import IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .services import (
@@ -19,6 +23,106 @@ from .services import (
 from .youtube_suggest_client import YouTubeSuggestClient
 
 User = get_user_model()
+
+
+class DeepSeekClientTestCase(APITestCase):
+    @override_settings(DEEPSEEK_TIMEOUT_SECONDS=60)
+    @patch("ideas.deepseek_client.urllib.request.urlopen")
+    def test_generate_json_uses_deepseek_api(self, mock_urlopen):
+        response = MagicMock()
+        response.read.return_value = (
+            b'{"choices":[{"message":{"content":"{\\"ideas\\": []}"}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = response
+
+        result = DeepSeekClient(
+            api_key="deepseek-key",
+            model="deepseek-v4-flash",
+        ).generate_json(
+            system_prompt="Return JSON.",
+            user_payload={"topic": "AI tools"},
+        )
+
+        request = mock_urlopen.call_args.args[0]
+        request_body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(request.full_url, "https://api.deepseek.com/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer deepseek-key")
+        self.assertEqual(request_body["model"], "deepseek-v4-flash")
+        self.assertEqual(result, {"ideas": []})
+
+    @override_settings(DEEPSEEK_API_KEY="", DEEPSEEK_MODEL="deepseek-v4-flash")
+    def test_client_requires_deepseek_api_key(self):
+        with self.assertRaises(ValidationError) as context:
+            DeepSeekClient()
+
+        self.assertIn("deepseek_api_key", context.exception.detail)
+
+
+class GroqClientTestCase(APITestCase):
+    @override_settings(GROQ_TIMEOUT_SECONDS=60)
+    @patch("ideas.groq_client.urllib.request.urlopen")
+    def test_generate_json_uses_current_groq_model(self, mock_urlopen):
+        response = MagicMock()
+        response.read.return_value = (
+            b'{"choices":[{"message":{"content":"{\\"ideas\\": []}"}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = response
+
+        result = GroqClient(
+            api_key="groq-key",
+            model="openai/gpt-oss-120b",
+        ).generate_json(
+            system_prompt="Return JSON.",
+            user_payload={"topic": "AI tools"},
+        )
+
+        request = mock_urlopen.call_args.args[0]
+        request_body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(
+            request.full_url,
+            "https://api.groq.com/openai/v1/chat/completions",
+        )
+        self.assertEqual(request_body["model"], "openai/gpt-oss-120b")
+        self.assertEqual(result, {"ideas": []})
+
+
+class TextGenerationClientTestCase(APITestCase):
+    @patch("ideas.llm_client.GroqClient")
+    @patch("ideas.llm_client.DeepSeekClient")
+    def test_uses_deepseek_without_calling_groq(
+        self,
+        mock_deepseek_client,
+        mock_groq_client,
+    ):
+        mock_deepseek_client.return_value.generate_json.return_value = {"source": "deepseek"}
+
+        result = TextGenerationClient().generate_json(
+            system_prompt="Return JSON.",
+            user_payload={"topic": "AI tools"},
+        )
+
+        self.assertEqual(result, {"source": "deepseek"})
+        mock_groq_client.assert_not_called()
+
+    @patch("ideas.llm_client.GroqClient")
+    @patch("ideas.llm_client.DeepSeekClient")
+    def test_uses_groq_when_deepseek_fails(
+        self,
+        mock_deepseek_client,
+        mock_groq_client,
+    ):
+        mock_deepseek_client.return_value.generate_json.side_effect = ValidationError(
+            {"deepseek_api": "Unavailable"}
+        )
+        mock_groq_client.return_value.generate_json.return_value = {"source": "groq"}
+
+        result = TextGenerationClient().generate_json(
+            system_prompt="Return JSON.",
+            user_payload={"topic": "AI tools"},
+        )
+
+        self.assertEqual(result, {"source": "groq"})
+        mock_groq_client.return_value.generate_json.assert_called_once()
 
 
 class IdeasAPITestCase(APITestCase):
