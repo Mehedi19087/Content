@@ -543,7 +543,7 @@ class TierPermissionHierarchyTests(APITestCase):
             user.groups.add(group)
         self.client.force_authenticate(user=user)
 
-    def test_free_user_can_view_trending_but_not_refresh(self):
+    def test_free_user_can_view_trending_but_not_research_intent(self):
         self._authenticate_user_in_group("Free Users")
         # GET trending -> 200 (Free tier OK)
         response = self.client.get(
@@ -552,24 +552,35 @@ class TierPermissionHierarchyTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
 
-        # POST refresh -> 403 (Starter tier required)
+        # YouTube intent research -> 403 (Starter tier required)
         response = self.client.post(
-            reverse("ideas-refresh"),
-            {"category_slug": "ai-automation", "region_code": "US"},
+            reverse("ideas-youtube-intent"),
+            {"idea": "AI tools for creators", "region_code": "US"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_creator_unlocks_all_lower_tier_endpoints(self):
         self._authenticate_user_in_group("Creator Users")
-        # Refresh requires Starter; as a Creator user we should pass.
-        with patch("ideas.views.refresh_ideas_for_category", return_value=[TierPermissionHierarchyTests.idea]):
+        # Intent research requires Starter; a Creator user should pass.
+        with patch(
+            "ideas.views.research_youtube_intent_for_idea",
+            return_value={
+                "viewer_intent": "Creators want useful AI tools",
+                "content_type": "tool recommendation",
+                "search_suggestions": [],
+                "title_patterns": [],
+                "emotional_angles": [],
+                "thumbnail_subjects": [],
+                "seo_keywords": [],
+            },
+        ):
             response = self.client.post(
-                reverse("ideas-refresh"),
-                {"category_slug": "ai-automation", "region_code": "US"},
+                reverse("ideas-youtube-intent"),
+                {"idea": "AI tools for creators", "region_code": "US"},
                 format="json",
             )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
 
 
 # ----------------------------------------------------------------------

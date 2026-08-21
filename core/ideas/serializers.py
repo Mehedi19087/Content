@@ -24,10 +24,31 @@ class TrendingIdeaQuerySerializer(serializers.Serializer):
         return attrs
 
 
-class RefreshIdeasSerializer(serializers.Serializer):
-    category_slug = serializers.SlugField(max_length=120)
+class CronRefreshIdeasSerializer(serializers.Serializer):
     region_code = serializers.CharField(max_length=20, default="US", required=False)
     limit = serializers.IntegerField(default=10, min_value=1, max_value=10, required=False)
+
+    def validate_region_code(self, value):
+        return value.strip().upper()
+
+
+class CronCategoryResultSerializer(serializers.Serializer):
+    category_slug = serializers.CharField(read_only=True)
+    status = serializers.ChoiceField(
+        choices=("succeeded", "failed"),
+        read_only=True,
+    )
+    attempts = serializers.IntegerField(read_only=True)
+    ideas_created = serializers.IntegerField(read_only=True)
+    error = serializers.CharField(read_only=True, allow_blank=True)
+
+
+class CronRefreshSummarySerializer(serializers.Serializer):
+    region_code = serializers.CharField(read_only=True)
+    total_categories = serializers.IntegerField(read_only=True)
+    succeeded = serializers.IntegerField(read_only=True)
+    failed = serializers.IntegerField(read_only=True)
+    results = CronCategoryResultSerializer(many=True, read_only=True)
 
 
 class YouTubeIntentResearchSerializer(serializers.Serializer):

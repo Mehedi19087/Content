@@ -16,7 +16,7 @@ Group <-> Plan mapping (matches the tier hierarchy in users/permissions.py):
 
     Plan slug | Group name     | Unlocks API endpoints (cumulative)
     ---------+----------------+---------------------------------------
-    starter  | Starter Users  | ideas/refresh, ideas/youtube-intent
+    starter  | Starter Users  | ideas/youtube-intent
     pro      | Pro Users       | + ideas/thumbnail-preparation, youtube/* (channel ops)
     ultra    | Ultra Users    | + ideas/generate-package
 

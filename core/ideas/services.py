@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
+import secrets
+import time
 import uuid
 from collections import Counter
 from datetime import timedelta
 from typing import Any
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import QuerySet
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from categories.models import Category
 from .llm_client import TextGenerationClient
@@ -22,6 +26,12 @@ from .youtube_suggest_client import YouTubeSuggestClient
 
 MAX_IDEAS_PER_REFRESH = 10
 MAX_INTENT_KEYWORDS = 6
+logger = logging.getLogger(__name__)
+
+
+class IdeaCronConfigurationError(RuntimeError):
+    pass
+
 
 BANNED_TITLE_PHRASES = {
     "exploring",
@@ -127,6 +137,143 @@ def refresh_ideas_for_category(
         ideas=ideas,
         source_video_count=len(scored_videos),
     )
+
+
+def verify_idea_cron_secret(provided_secret: str | None) -> None:
+    configured_secret = settings.IDEA_CRON_SECRET
+    if not configured_secret:
+        raise IdeaCronConfigurationError("IDEA_CRON_SECRET is not configured.")
+    if not provided_secret or not secrets.compare_digest(
+        str(provided_secret),
+        configured_secret,
+    ):
+        raise PermissionDenied("Invalid cron secret.")
+
+
+def refresh_all_ideas_for_cron(
+    *,
+    region_code: str = "US",
+    limit: int = MAX_IDEAS_PER_REFRESH,
+) -> dict[str, Any]:
+    categories = [
+        category
+        for category in Category.objects.filter(is_active=True).order_by("id")
+        if region_code in category.default_regions
+    ]
+    if not categories:
+        raise ValidationError(
+            {"region_code": f"No active categories are enabled for {region_code}."}
+        )
+
+    results = []
+    for category in categories:
+        results.append(
+            _refresh_category_with_retry(
+                category=category,
+                region_code=region_code,
+                limit=limit,
+            )
+        )
+
+    succeeded = sum(result["status"] == "succeeded" for result in results)
+    return {
+        "region_code": region_code,
+        "total_categories": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
+
+
+def _refresh_category_with_retry(
+    *,
+    category: Category,
+    region_code: str,
+    limit: int,
+) -> dict[str, Any]:
+    max_attempts = max(1, settings.IDEA_CRON_MAX_ATTEMPTS)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            ideas = refresh_ideas_for_category(
+                category_slug=category.slug,
+                region_code=region_code,
+                limit=limit,
+            )
+            return {
+                "category_slug": category.slug,
+                "status": "succeeded",
+                "attempts": attempt,
+                "ideas_created": len(ideas),
+                "error": "",
+            }
+        except Exception as exc:
+            retryable = _is_retryable_refresh_error(exc)
+            if attempt >= max_attempts or not retryable:
+                log_failure = (
+                    logger.warning
+                    if isinstance(exc, ValidationError)
+                    else logger.exception
+                )
+                log_failure(
+                    "ideas.cron.category_failed category=%s attempt=%s "
+                    "retryable=%s error=%s",
+                    category.slug,
+                    attempt,
+                    retryable,
+                    _format_refresh_error(exc),
+                )
+                return {
+                    "category_slug": category.slug,
+                    "status": "failed",
+                    "attempts": attempt,
+                    "ideas_created": 0,
+                    "error": _format_refresh_error(exc),
+                }
+
+            delay = min(
+                settings.IDEA_CRON_RETRY_BASE_SECONDS * (2 ** (attempt - 1)),
+                settings.IDEA_CRON_RETRY_MAX_SECONDS,
+            )
+            logger.warning(
+                "ideas.cron.category_retry category=%s attempt=%s delay=%s",
+                category.slug,
+                attempt,
+                delay,
+            )
+            time.sleep(delay)
+
+    raise RuntimeError("Unreachable idea refresh retry state.")
+
+
+def _is_retryable_refresh_error(exc: Exception) -> bool:
+    upstream_status = getattr(exc, "upstream_status_code", None)
+    if upstream_status is not None:
+        return upstream_status in (408, 429) or upstream_status >= 500
+    if not isinstance(exc, ValidationError):
+        return True
+
+    detail = str(exc.detail).lower()
+    transient_markers = (
+        "http 408",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "rate limit",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "connection reset",
+        "connection refused",
+    )
+    return any(marker in detail for marker in transient_markers)
+
+
+def _format_refresh_error(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        return str(exc.detail)[:1000]
+    return str(exc)[:1000] or exc.__class__.__name__
 
 
 def research_youtube_intent_for_idea(
@@ -1674,7 +1821,7 @@ def save_idea_candidates(
     source_video_count: int,
 ) -> list[IdeaCandidate]:
     batch_id = uuid.uuid4()
-    expires_at = timezone.now() + timedelta(hours=12)
+    expires_at = timezone.now() + timedelta(hours=settings.IDEA_EXPIRY_HOURS)
 
     with transaction.atomic():
         IdeaCandidate.objects.filter(

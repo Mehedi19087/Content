@@ -19,6 +19,7 @@ from .models import IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .services import (
     normalize_script_guide,
+    refresh_all_ideas_for_cron,
     research_youtube_intent_for_idea,
     validate_generated_ideas,
 )
@@ -210,6 +211,224 @@ class YouTubeClientTestCase(APITestCase):
             )
 
 
+class IdeaCronServiceTestCase(APITestCase):
+    def setUp(self):
+        self.first_category = Category.objects.create(
+            name="First Category",
+            slug="first-category",
+            default_regions=["US"],
+            is_active=True,
+        )
+        self.second_category = Category.objects.create(
+            name="Second Category",
+            slug="second-category",
+            default_regions=["US"],
+            is_active=True,
+        )
+        Category.objects.create(
+            name="Inactive Category",
+            slug="inactive-category",
+            default_regions=["US"],
+            is_active=False,
+        )
+
+    @override_settings(
+        IDEA_CRON_MAX_ATTEMPTS=3,
+        IDEA_CRON_RETRY_BASE_SECONDS=2,
+        IDEA_CRON_RETRY_MAX_SECONDS=10,
+    )
+    @patch("ideas.services.time.sleep")
+    @patch("ideas.services.refresh_ideas_for_category")
+    def test_refreshes_categories_sequentially_and_retries_transient_errors(
+        self,
+        mock_refresh,
+        mock_sleep,
+    ):
+        calls = []
+
+        def refresh_side_effect(*, category_slug, region_code, limit):
+            calls.append(category_slug)
+            if category_slug == "first-category" and calls.count(category_slug) == 1:
+                raise ValidationError({"llm_api": "HTTP 503 unavailable"})
+            return [object()] * (1 if category_slug == "first-category" else 2)
+
+        mock_refresh.side_effect = refresh_side_effect
+
+        summary = refresh_all_ideas_for_cron(region_code="US", limit=5)
+
+        self.assertEqual(
+            calls,
+            ["first-category", "first-category", "second-category"],
+        )
+        mock_sleep.assert_called_once_with(2)
+        self.assertEqual(summary["total_categories"], 2)
+        self.assertEqual(summary["succeeded"], 2)
+        self.assertEqual(summary["failed"], 0)
+        self.assertEqual(summary["results"][0]["attempts"], 2)
+        self.assertEqual(summary["results"][1]["ideas_created"], 2)
+
+    @override_settings(
+        IDEA_CRON_MAX_ATTEMPTS=3,
+        IDEA_CRON_RETRY_BASE_SECONDS=2,
+        IDEA_CRON_RETRY_MAX_SECONDS=10,
+    )
+    @patch("ideas.services.time.sleep")
+    @patch("ideas.services.refresh_ideas_for_category")
+    def test_permanent_failure_is_not_retried_and_preserves_active_ideas(
+        self,
+        mock_refresh,
+        mock_sleep,
+    ):
+        existing_idea = IdeaCandidate.objects.create(
+            category=self.first_category,
+            region_code="US",
+            title="Existing idea",
+            why_now="Existing evidence",
+            audience_promise="Existing promise",
+            suggested_format="Tutorial",
+            is_active=True,
+        )
+        mock_refresh.side_effect = ValidationError(
+            {"videos": "No usable YouTube videos found."}
+        )
+
+        summary = refresh_all_ideas_for_cron(region_code="US", limit=5)
+
+        self.assertEqual(summary["failed"], 2)
+        self.assertEqual(mock_refresh.call_count, 2)
+        mock_sleep.assert_not_called()
+        existing_idea.refresh_from_db()
+        self.assertTrue(existing_idea.is_active)
+
+    @override_settings(
+        IDEA_CRON_MAX_ATTEMPTS=3,
+        IDEA_CRON_RETRY_BASE_SECONDS=2,
+        IDEA_CRON_RETRY_MAX_SECONDS=3,
+    )
+    @patch("ideas.services.time.sleep")
+    @patch("ideas.services.refresh_ideas_for_category")
+    def test_transient_failure_uses_bounded_backoff_then_continues(
+        self,
+        mock_refresh,
+        mock_sleep,
+    ):
+        def refresh_side_effect(*, category_slug, region_code, limit):
+            if category_slug == "first-category":
+                raise ValidationError({"llm_api": "HTTP 503 unavailable"})
+            return [object()]
+
+        mock_refresh.side_effect = refresh_side_effect
+
+        summary = refresh_all_ideas_for_cron(region_code="US", limit=5)
+
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["succeeded"], 1)
+        self.assertEqual(summary["results"][0]["attempts"], 3)
+        self.assertEqual(
+            [sleep_call.args[0] for sleep_call in mock_sleep.call_args_list],
+            [2, 3],
+        )
+
+
+class IdeaCronRefreshAPITestCase(APITestCase):
+    @override_settings(IDEA_CRON_SECRET="cron-secret")
+    def test_cron_endpoint_rejects_missing_secret(self):
+        response = self.client.post(reverse("ideas-cron-refresh"), {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @override_settings(IDEA_CRON_SECRET="cron-secret")
+    def test_cron_endpoint_rejects_incorrect_secret(self):
+        response = self.client.post(
+            reverse("ideas-cron-refresh"),
+            {},
+            format="json",
+            HTTP_X_CRON_SECRET="wrong-secret",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @override_settings(IDEA_CRON_SECRET="")
+    def test_cron_endpoint_reports_missing_server_configuration(self):
+        response = self.client.post(
+            reverse("ideas-cron-refresh"),
+            {},
+            format="json",
+            HTTP_X_CRON_SECRET="cron-secret",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    @override_settings(IDEA_CRON_SECRET="cron-secret")
+    @patch("ideas.views.refresh_all_ideas_for_cron")
+    def test_cron_endpoint_refreshes_all_categories(self, mock_refresh_all):
+        mock_refresh_all.return_value = {
+            "region_code": "US",
+            "total_categories": 2,
+            "succeeded": 2,
+            "failed": 0,
+            "results": [
+                {
+                    "category_slug": "first-category",
+                    "status": "succeeded",
+                    "attempts": 1,
+                    "ideas_created": 10,
+                    "error": "",
+                },
+                {
+                    "category_slug": "second-category",
+                    "status": "succeeded",
+                    "attempts": 2,
+                    "ideas_created": 10,
+                    "error": "",
+                },
+            ],
+        }
+
+        response = self.client.post(
+            reverse("ideas-cron-refresh"),
+            {"region_code": "us", "limit": 10},
+            format="json",
+            HTTP_X_CRON_SECRET="cron-secret",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["data"]["succeeded"], 2)
+        mock_refresh_all.assert_called_once_with(region_code="US", limit=10)
+
+    @override_settings(IDEA_CRON_SECRET="cron-secret")
+    @patch("ideas.views.refresh_all_ideas_for_cron")
+    def test_cron_endpoint_returns_failure_status_for_partial_result(
+        self,
+        mock_refresh_all,
+    ):
+        mock_refresh_all.return_value = {
+            "region_code": "US",
+            "total_categories": 1,
+            "succeeded": 0,
+            "failed": 1,
+            "results": [
+                {
+                    "category_slug": "failed-category",
+                    "status": "failed",
+                    "attempts": 3,
+                    "ideas_created": 0,
+                    "error": "Provider unavailable",
+                }
+            ],
+        }
+
+        response = self.client.post(
+            reverse("ideas-cron-refresh"),
+            {},
+            format="json",
+            HTTP_X_CRON_SECRET="cron-secret",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(response.data["data"]["failed"], 1)
+
+
 class IdeasAPITestCase(APITestCase):
     def setUp(self):
         # A Creator-tier user is at the top of the cumulative hierarchy
@@ -260,8 +479,8 @@ class IdeasAPITestCase(APITestCase):
         self.assertEqual(len(response.data["data"]), 1)
         self.assertEqual(response.data["data"][0]["title"], self.idea.title)
 
-    def test_idea_refresh_preflight_allows_frontend_preview_origins(self):
-        url = reverse("ideas-refresh")
+    def test_idea_post_preflight_allows_frontend_preview_origins(self):
+        url = reverse("ideas-youtube-intent")
         origins = (
             "http://localhost:5173",
             "https://id-preview-123.lovable.app",
@@ -326,26 +545,6 @@ class IdeasAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data["error"]["code"], "validation_error")
-
-    @patch("ideas.views.refresh_ideas_for_category")
-    def test_refresh_ideas(self, mock_refresh_ideas_for_category):
-        mock_refresh_ideas_for_category.return_value = [self.idea]
-        url = reverse("ideas-refresh")
-
-        response = self.client.post(
-            url,
-            {"category_slug": "ai-automation", "region_code": "US"},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["message"], "trending ideas refreshed successfully")
-        self.assertEqual(response.data["data"][0]["title"], self.idea.title)
-        mock_refresh_ideas_for_category.assert_called_once_with(
-            category_slug="ai-automation",
-            region_code="US",
-            limit=10,
-        )
 
     @patch("ideas.views.research_youtube_intent_for_idea")
     def test_research_youtube_intent(self, mock_research_youtube_intent_for_idea):

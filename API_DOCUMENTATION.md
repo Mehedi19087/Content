@@ -10,6 +10,7 @@ A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. 
 * **JSON Web Token (JWT) Authentication** is required for all data endpoints (Categories and Ideas).
 * Requests to data endpoints must include the following header: `Authorization: Bearer <access_token>`
 * Public endpoints (authentication not required) are marked with `(Public)`.
+* The internal idea cron endpoint does not accept user JWTs; it requires `X-Cron-Secret`.
 
 ---
 
@@ -30,7 +31,7 @@ A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. 
 | 11 | `DELETE` | `categories/<id>/` | Delete category (Authenticated) |
 | 12 | `GET` | `ideas/` | Get global or category-filtered trending ideas (Authenticated) |
 | 13 | `GET` | `ideas/trending/` | Backward-compatible trending ideas URL (Authenticated) |
-| 14 | `POST` | `ideas/refresh/` | Refresh ideas for a category (Authenticated) |
+| 14 | `POST` | `internal/ideas/refresh/` | Refresh every active category sequentially (Cron secret) |
 | 15 | `POST` | `ideas/youtube-intent/` | Research YouTube intent (Authenticated) |
 | 16 | `POST` | `ideas/thumbnail-preparation/` | Prepare thumbnail hooks (Authenticated) |
 | 17 | `POST` | `ideas/generate-package/` | Generate final content package (Authenticated) |
@@ -347,50 +348,69 @@ category. `ideas/trending/` remains available as an alias.
 
 ---
 
-## 7. POST `ideas/refresh/`
+## 7. POST `internal/ideas/refresh/`
 
-Refresh trending ideas for a category by fetching new YouTube data and generating new ideas via DeepSeek.
+Internal scheduled endpoint. It refreshes every active category enabled for the
+requested region, one category at a time. DeepSeek is attempted first and Groq
+is the fallback. Transient failures receive bounded retries; permanent failures
+do not block later categories. Existing ideas remain active for any failed category.
+
+**Authentication header:**
+
+```text
+X-Cron-Secret: <IDEA_CRON_SECRET>
+```
 
 **Request:**
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `category_slug` | string | Yes | — | Category slug |
 | `region_code` | string | No | `"US"` | Region code |
-| `limit` | integer | No | `10` | Max ideas (1-10) |
+| `limit` | integer | No | `10` | Ideas per category (1-10) |
 
 ```json
 {
-  "category_slug": "ai-automation",
   "region_code": "US",
   "limit": 10
 }
 ```
 
-**Response (201):** Same shape as the trending ideas response.
+An empty JSON object (`{}`) uses the defaults.
+
+**Response (200):**
 
 ```json
 {
-  "message": "trending ideas refreshed successfully",
-  "data": [...]
+  "message": "scheduled idea refresh completed successfully",
+  "data": {
+    "region_code": "US",
+    "total_categories": 12,
+    "succeeded": 12,
+    "failed": 0,
+    "results": [
+      {
+        "category_slug": "ai-automation",
+        "status": "succeeded",
+        "attempts": 1,
+        "ideas_created": 10,
+        "error": ""
+      }
+    ]
+  }
 }
 ```
 
-**Error (400):**
+The endpoint returns `503` with the same summary when one or more categories
+exhaust their retries, allowing cron monitoring to detect partial failure.
 
-```json
-{
-  "videos": ["No usable YouTube videos found for this category and region."]
-}
-```
+Required environment variables and retry defaults:
 
-**Error (500):**
-
-```json
-{
-  "message": "Failed to refresh ideas due to an internal server error.",
-  "detail": "..."
-}
+```env
+IDEA_CRON_SECRET=<long-random-secret>
+IDEA_CRON_MAX_ATTEMPTS=3
+IDEA_CRON_RETRY_BASE_SECONDS=5
+IDEA_CRON_RETRY_MAX_SECONDS=30
+IDEA_EXPIRY_HOURS=26
 ```
 
 ---
@@ -688,8 +708,8 @@ Cloudinary thumbnail storage requires `CLOUDINARY_CLOUD_NAME`,
 The typical API usage follows this sequence:
 
 1. **Create Category** - `POST categories/`
-2. **Refresh Ideas** - `POST ideas/refresh/` (fetches YouTube data, generates ideas via DeepSeek)
-3. **Get Trending Ideas** - `GET ideas/trending/` (list generated ideas)
+2. **Scheduled Refresh** - cron calls `POST internal/ideas/refresh/` once daily
+3. **Get Trending Ideas** - users call `GET ideas/trending/` (read-only)
 4. **Research Intent** - `POST ideas/youtube-intent/` (analyze a specific idea)
 5. **Prepare Thumbnail** - `POST ideas/thumbnail-preparation/` (generate hook cards and subject plans)
 6. **Generate Package** - `POST ideas/generate-package/` (create a Cloudinary-hosted thumbnail + SEO + script + edit options)
@@ -703,7 +723,7 @@ Entitlement is group-based: each Plan maps to a Django auth Group, and the user 
 | Tier (Group) | Unlocks |
 |---|---|
 | Free Users | `GET ideas/trending/` |
-| Starter Users | + `POST ideas/refresh/`, `POST ideas/youtube-intent/` |
+| Starter Users | + `POST ideas/youtube-intent/` |
 | Pro Users | + `POST ideas/thumbnail-preparation/`, all `youtube/*` endpoints |
 | Creator Users | + `POST ideas/generate-package/` |
 

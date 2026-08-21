@@ -1,8 +1,8 @@
 from django.urls import path
 
 from .views import (
+    CronRefreshIdeasAPIView,
     GeneratePackageAPIView,
-    RefreshIdeasAPIView,
     ThumbnailPreparationAPIView,
     TrendingIdeasAPIView,
     YouTubeIntentResearchAPIView,
@@ -10,9 +10,13 @@ from .views import (
 
 
 urlpatterns = [
+    path(
+        "internal/ideas/refresh/",
+        CronRefreshIdeasAPIView.as_view(),
+        name="ideas-cron-refresh",
+    ),
     path("ideas/", TrendingIdeasAPIView.as_view(), name="ideas-list"),
     path("ideas/trending/", TrendingIdeasAPIView.as_view(), name="ideas-trending"),
-    path("ideas/refresh/", RefreshIdeasAPIView.as_view(), name="ideas-refresh"),
     path(
         "ideas/youtube-intent/",
         YouTubeIntentResearchAPIView.as_view(),
