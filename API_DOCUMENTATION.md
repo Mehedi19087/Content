@@ -447,7 +447,7 @@ Research YouTube search intent for a specific video idea. Analyzes YouTube searc
     "content_type": "listicle / tool recommendation",
     "title_patterns": ["Best [topic]", "Top [number] [topic]", "I tested [topic]"],
     "emotional_angles": ["shock", "curiosity gap", "productivity gain"],
-    "thumbnail_subjects": ["shocked person at laptop", "AI robot assistant", "software dashboard on laptop"],
+    "thumbnail_subjects": ["creator comparing five agent workflow results", "research task transforming into a finished video brief", "five distinct automation result cards"],
     "seo_keywords": ["ai agents", "chatgpt", "automation", "creator tools", "productivity"]
   }
 }
@@ -461,7 +461,7 @@ Research YouTube search intent for a specific video idea. Analyzes YouTube searc
 | `content_type` | string | Detected content type (e.g., tutorial, listicle, comparison) |
 | `title_patterns` | string[] | Effective title patterns for this idea |
 | `emotional_angles` | string[] | Emotional angles for thumbnails |
-| `thumbnail_subjects` | string[] | Suggested thumbnail visual subjects |
+| `thumbnail_subjects` | string[] | Title-specific visual subjects generated from the idea and research |
 | `seo_keywords` | string[] | Extracted SEO keywords |
 
 **Error (400):**
@@ -502,7 +502,7 @@ The `youtube_intent` object must contain these fields:
     "content_type": "listicle / tool recommendation",
     "title_patterns": ["Best [topic]"],
     "emotional_angles": ["shock", "curiosity gap"],
-    "thumbnail_subjects": ["shocked person at laptop", "AI robot assistant"],
+    "thumbnail_subjects": ["creator comparing five agent workflow results", "research task transforming into a finished video brief"],
     "seo_keywords": ["ai agents", "chatgpt", "automation"]
   }
 }
@@ -541,18 +541,18 @@ The `youtube_intent` object must contain these fields:
       {
         "type": "human",
         "role": "supporting_subject",
-        "description": "shocked person at laptop",
+        "description": "creator comparing five agent workflow results",
         "count": 1,
         "source": "ai_generate",
-        "ai_prompt": "Generate a photorealistic shocked person at laptop for a YouTube thumbnail about I Tested 5 AI Agents... Clear facial expression, dramatic high contrast lighting, real camera look, clean composition, no text."
+        "ai_prompt": "Generate a photorealistic creator comparing five agent workflow results for a YouTube thumbnail about I Tested 5 AI Agents... Clear facial expression, dramatic high contrast lighting, real camera look, clean composition, no text."
       },
       {
         "type": "object",
         "role": "supporting_subject",
-        "description": "AI robot assistant",
+        "description": "research task transforming into a finished video brief",
         "count": 1,
         "source": "ai_generate",
-        "ai_prompt": "Generate a photorealistic object/scene of AI robot assistant for a YouTube thumbnail about... High contrast, clear shape, realistic detail, clean composition, no text."
+        "ai_prompt": "Generate a photorealistic object/scene of a research task transforming into a finished video brief for a YouTube thumbnail about... High contrast, clear shape, realistic detail, clean composition, no text."
       }
     ],
     "image_preparation": {
@@ -594,7 +594,7 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
     "content_type": "listicle / tool recommendation",
     "title_patterns": ["Best [topic]"],
     "emotional_angles": ["shock", "curiosity gap"],
-    "thumbnail_subjects": ["shocked person at laptop", "AI robot assistant"],
+    "thumbnail_subjects": ["creator comparing five agent workflow results", "research task transforming into a finished video brief"],
     "seo_keywords": ["ai agents", "chatgpt", "automation"]
   },
   "selected_hook": {
@@ -606,7 +606,7 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
     {
       "type": "human",
       "role": "supporting_subject",
-      "description": "shocked person at laptop",
+      "description": "creator comparing five agent workflow results",
       "count": 1,
       "source": "ai_generate",
       "ai_prompt": "..."
@@ -636,12 +636,12 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
         "angle": "curiosity",
         "thumbnail_text": "Nobody Explains This"
       },
-      "prompt": "Create a photorealistic 16:9 YouTube thumbnail. Video idea: I Tested 5 AI Agents... Viewer intent: people want the best ai agent options... Main visual subjects: shocked person at laptop, AI robot assistant... Render this exact thumbnail text inside the image: Nobody Explains This. Dramatic high contrast lighting...",
+      "prompt": "Create a photorealistic 16:9 YouTube thumbnail. Video idea: I Tested 5 AI Agents... Viewer intent: people want the best ai agent options... Main visual subjects: creator comparing five agent workflow results, research task transforming into a finished video brief... Render this exact thumbnail text inside the image: Nobody Explains This. Dramatic high contrast lighting...",
       "used_subjects": [
         {
           "type": "human",
           "role": "supporting_subject",
-          "description": "shocked person at laptop",
+          "description": "creator comparing five agent workflow results",
           "count": 1,
           "source": "ai_generate",
           "ai_prompt": "..."

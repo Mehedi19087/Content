@@ -18,6 +18,7 @@ from .llm_client import TextGenerationClient
 from .models import IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .services import (
+    generate_contextual_thumbnail_subjects,
     normalize_script_guide,
     refresh_all_ideas_for_cron,
     research_youtube_intent_for_idea,
@@ -175,6 +176,64 @@ class TextGenerationClientTestCase(APITestCase):
 
         self.assertEqual(result, {"source": "groq"})
         mock_groq_client.return_value.generate_json.assert_called_once()
+
+
+class ContextualThumbnailSubjectsTestCase(APITestCase):
+    @patch("ideas.services.TextGenerationClient")
+    def test_uses_title_specific_subjects_from_llm(self, mock_text_client_class):
+        mock_text_client_class.return_value.generate_json.return_value = {
+            "thumbnail_subjects": [
+                "creator comparing five completed automation results",
+                "content calendar filling itself with finished posts",
+                "stack of repetitive tasks reduced to one workflow",
+            ]
+        }
+
+        result = generate_contextual_thumbnail_subjects(
+            idea="I Tested 5 AI Tools That Automate a Creator Workflow",
+            viewer_intent="creators want to know which tools save practical time",
+            content_type="comparison / review",
+            seo_keywords=["creator automation", "ai workflow"],
+            evidence_titles=["Testing Current Creator Automation Tools"],
+        )
+
+        self.assertEqual(
+            result,
+            [
+                "creator comparing five completed automation results",
+                "content calendar filling itself with finished posts",
+                "stack of repetitive tasks reduced to one workflow",
+            ],
+        )
+        payload = mock_text_client_class.return_value.generate_json.call_args.kwargs[
+            "user_payload"
+        ]
+        self.assertEqual(
+            payload["video_title"],
+            "I Tested 5 AI Tools That Automate a Creator Workflow",
+        )
+
+    @patch("ideas.services.TextGenerationClient")
+    def test_falls_back_to_exact_title_when_both_llms_fail(
+        self,
+        mock_text_client_class,
+    ):
+        mock_text_client_class.return_value.generate_json.side_effect = ValidationError(
+            {"llm_api": "Unavailable"}
+        )
+
+        result = generate_contextual_thumbnail_subjects(
+            idea="A Solar Generator Powered My Studio for 24 Hours",
+            viewer_intent="viewers want proof that the generator can run a studio",
+            content_type="comparison / review",
+            seo_keywords=["solar generator", "studio power"],
+            evidence_titles=[],
+        )
+
+        self.assertEqual(
+            result,
+            ["A Solar Generator Powered My Studio for 24 Hours"],
+        )
 
 
 class YouTubeClientTestCase(APITestCase):
@@ -562,9 +621,9 @@ class IdeasAPITestCase(APITestCase):
                 "productivity gain",
             ],
             "thumbnail_subjects": [
-                "shocked person at laptop",
-                "AI robot assistant",
-                "busy workspace",
+                "creator comparing five automation results",
+                "five tool outputs arranged as result cards",
+                "repetitive task stack reduced to one workflow",
             ],
             "seo_keywords": [
                 "ai tools",
@@ -602,9 +661,9 @@ class IdeasAPITestCase(APITestCase):
         self.assertEqual(
             response.data["data"]["thumbnail_subjects"],
             [
-                "shocked person at laptop",
-                "AI robot assistant",
-                "busy workspace",
+                "creator comparing five automation results",
+                "five tool outputs arranged as result cards",
+                "repetitive task stack reduced to one workflow",
             ],
         )
         self.assertEqual(
@@ -632,13 +691,22 @@ class IdeasAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @patch("ideas.services.TextGenerationClient")
     @patch("ideas.services.YouTubeClient")
     @patch("ideas.services.YouTubeSuggestClient")
     def test_youtube_intent_uses_search_suggestions(
         self,
         mock_suggest_client_class,
         mock_youtube_client_class,
+        mock_text_client_class,
     ):
+        mock_text_client_class.return_value.generate_json.return_value = {
+            "thumbnail_subjects": [
+                "creator arranging connected AI agent task cards",
+                "automated research task passing into a draft",
+                "finished video package produced by an agent workflow",
+            ]
+        }
         mock_suggest_client_class.return_value.fetch_suggestions.return_value = [
             "ai agents for beginners",
             "ai agents tutorial",
@@ -681,6 +749,14 @@ class IdeasAPITestCase(APITestCase):
         )
         self.assertEqual(result["seo_keywords"][0], "ai agents beginners")
         self.assertIn("ai agents tutorial", result["viewer_intent"])
+        self.assertEqual(
+            result["thumbnail_subjects"],
+            [
+                "creator arranging connected AI agent task cards",
+                "automated research task passing into a draft",
+                "finished video package produced by an agent workflow",
+            ],
+        )
 
     @patch("ideas.youtube_suggest_client.urllib.request.urlopen")
     def test_youtube_suggest_client_parses_firefox_response(self, mock_urlopen):
@@ -787,9 +863,9 @@ class IdeasAPITestCase(APITestCase):
                         "productivity gain",
                     ],
                     "thumbnail_subjects": [
-                        "shocked person at laptop",
-                        "AI robot assistant",
-                        "busy workspace",
+                        "creator comparing five automation results",
+                        "five tool outputs arranged as result cards",
+                        "repetitive task stack reduced to one workflow",
                     ],
                     "seo_keywords": [
                         "ai tools",
@@ -897,7 +973,7 @@ class IdeasAPITestCase(APITestCase):
             "content_type": "listicle / tool recommendation",
             "title_patterns": ["Best [topic]"],
             "emotional_angles": ["shock"],
-            "thumbnail_subjects": ["shocked person at laptop"],
+            "thumbnail_subjects": ["creator comparing five automation results"],
             "seo_keywords": ["ai tools"],
         }
         selected_hook = {
@@ -909,9 +985,9 @@ class IdeasAPITestCase(APITestCase):
             {
                 "type": "human",
                 "role": "supporting_subject",
-                "description": "shocked person at laptop",
+                "description": "creator comparing five automation results",
                 "source": "ai_generate",
-                "ai_prompt": "Generate a photorealistic shocked person at laptop.",
+                "ai_prompt": "Generate a creator comparing five automation results.",
             }
         ]
         url = reverse("ideas-generate-package")

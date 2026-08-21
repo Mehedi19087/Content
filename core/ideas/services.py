@@ -379,23 +379,86 @@ def analyze_youtube_intent(
     )
     content_type = detect_content_type(titles=titles, combined_text=combined_text)
 
+    viewer_intent = build_viewer_intent(
+        keywords=keywords,
+        content_type=content_type,
+        search_suggestions=search_suggestions,
+    )
+    thumbnail_subjects = generate_contextual_thumbnail_subjects(
+        idea=idea,
+        viewer_intent=viewer_intent,
+        content_type=content_type,
+        seo_keywords=keywords,
+        evidence_titles=titles,
+    )
+
     return {
-        "viewer_intent": build_viewer_intent(
-            keywords=keywords,
-            content_type=content_type,
-            search_suggestions=search_suggestions,
-        ),
+        "viewer_intent": viewer_intent,
         "content_type": content_type,
         "title_patterns": detect_title_patterns(titles + search_suggestions),
         "emotional_angles": detect_emotional_angles(combined_text),
-        "thumbnail_subjects": detect_thumbnail_subjects(
-            idea=idea,
-            combined_text=combined_text,
-            keywords=keywords,
-        ),
+        "thumbnail_subjects": thumbnail_subjects,
         "seo_keywords": keywords,
         "search_suggestions": search_suggestions,
     }
+
+
+def generate_contextual_thumbnail_subjects(
+    *,
+    idea: str,
+    viewer_intent: str,
+    content_type: str,
+    seo_keywords: list[str],
+    evidence_titles: list[str],
+) -> list[str]:
+    system_prompt = """
+You are a YouTube thumbnail visual director. Choose visual subjects specifically for
+the supplied video title. Return strict JSON with one top-level key:
+thumbnail_subjects.
+
+thumbnail_subjects rules:
+- Return exactly 3 concise, concrete, visually renderable subject descriptions.
+- Every subject must help communicate this exact title and viewer promise.
+- Prefer specific people, products, tools, objects, actions, outcomes, or visual
+  metaphors named or clearly implied by the title and research.
+- Make the three subjects work together in one uncluttered thumbnail composition.
+- Do not return generic stock concepts such as a random laptop user, AI robot,
+  glowing brain, busy workspace, arrows, or money unless the title specifically
+  requires that exact subject.
+- Do not include thumbnail text, logos, camera directions, art style, lighting,
+  layout instructions, or explanations.
+- Do not copy the subjects of evidence thumbnails; use evidence titles only to
+  understand topic context.
+""".strip()
+    user_payload = {
+        "video_title": idea,
+        "viewer_intent": viewer_intent,
+        "content_type": content_type,
+        "seo_keywords": seo_keywords[:6],
+        "youtube_evidence_titles": evidence_titles[:10],
+    }
+
+    try:
+        generated = TextGenerationClient().generate_json(
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            temperature=0.35,
+        )
+    except ValidationError:
+        logger.warning(
+            "Thumbnail subject generation failed; using the video title as context."
+        )
+        return [idea.strip()]
+
+    subjects = normalize_string_list(
+        generated.get("thumbnail_subjects", [])
+        if isinstance(generated, dict)
+        else []
+    )
+    subjects = [subject for subject in subjects if subject.lower() != idea.lower()]
+    if not subjects:
+        return [idea.strip()]
+    return subjects[:3]
 
 
 def prepare_thumbnail_from_intent(
@@ -439,7 +502,7 @@ def build_thumbnail_subject_plan(
     idea: str,
 ) -> list[dict[str, Any]]:
     subject_plan = []
-    selected_subjects = subjects[:3] or ["curious person looking at screen"]
+    selected_subjects = subjects[:3] or [idea.strip()]
 
     for subject in selected_subjects:
         subject_type = detect_thumbnail_subject_type(subject)
@@ -1074,40 +1137,6 @@ def detect_emotional_angles(combined_text: str) -> list[str]:
     if not angles:
         angles = ["curiosity gap", "productivity gain", "shock"]
     return angles[:3]
-
-
-def detect_thumbnail_subjects(
-    *,
-    idea: str,
-    combined_text: str,
-    keywords: list[str],
-) -> list[str]:
-    subjects = []
-    if any(
-        marker in combined_text
-        for marker in ("mistake", "warning", "replace", "secret", "shocking", "stop")
-    ):
-        subjects.append("shocked person at laptop")
-    elif any(marker in combined_text for marker in ("tutorial", "how to", "beginner")):
-        subjects.append("focused person using laptop")
-    else:
-        subjects.append("curious person looking at screen")
-
-    if "ai" in combined_text:
-        subjects.append("AI robot assistant")
-    if any(marker in combined_text for marker in ("tool", "tools", "app", "software")):
-        subjects.append("software dashboard on laptop")
-
-    for keyword in keywords:
-        if len(subjects) >= 3:
-            break
-        if keyword not in subjects:
-            subjects.append(keyword)
-
-    if len(subjects) < 3:
-        subjects.append("busy workspace")
-
-    return subjects[:3]
 
 
 def build_viewer_intent(
