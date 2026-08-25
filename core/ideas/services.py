@@ -18,7 +18,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from categories.models import Category
 from .llm_client import TextGenerationClient
-from .models import IdeaCandidate
+from .models import ContentPackageJob, IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .youtube_client import YouTubeClient
 from .youtube_suggest_client import YouTubeSuggestClient
@@ -365,60 +365,59 @@ def analyze_youtube_intent(
     search_suggestions: list[str] | None = None,
 ) -> dict[str, Any]:
     search_suggestions = normalize_string_list(search_suggestions or [])
-    titles = [video["title"] for video in videos]
-    combined_text = " ".join(
-        [idea, query]
-        + search_suggestions
-        + titles
-        + [video.get("description", "")[:300] for video in videos]
-    ).lower()
-    keywords = extract_seo_keywords(
+    relevant_videos = filter_relevant_intent_videos(
         idea=idea,
         videos=videos,
-        search_suggestions=search_suggestions,
     )
-    content_type = detect_content_type(titles=titles, combined_text=combined_text)
-
-    viewer_intent = build_viewer_intent(
-        keywords=keywords,
-        content_type=content_type,
-        search_suggestions=search_suggestions,
-    )
-    thumbnail_subjects = generate_contextual_thumbnail_subjects(
+    relevant_suggestions = filter_relevant_phrases(
         idea=idea,
-        viewer_intent=viewer_intent,
-        content_type=content_type,
-        seo_keywords=keywords,
-        evidence_titles=titles,
+        phrases=search_suggestions,
+    )
+    analysis = generate_contextual_intent_analysis(
+        idea=idea,
+        query=query,
+        videos=relevant_videos,
+        search_suggestions=relevant_suggestions,
     )
 
     return {
-        "viewer_intent": viewer_intent,
-        "content_type": content_type,
-        "title_patterns": detect_title_patterns(titles + search_suggestions),
-        "emotional_angles": detect_emotional_angles(combined_text),
-        "thumbnail_subjects": thumbnail_subjects,
-        "seo_keywords": keywords,
-        "search_suggestions": search_suggestions,
+        **analysis,
+        "search_suggestions": relevant_suggestions,
     }
 
 
-def generate_contextual_thumbnail_subjects(
+def generate_contextual_intent_analysis(
     *,
     idea: str,
-    viewer_intent: str,
-    content_type: str,
-    seo_keywords: list[str],
-    evidence_titles: list[str],
-) -> list[str]:
+    query: str,
+    videos: list[dict[str, Any]],
+    search_suggestions: list[str],
+) -> dict[str, Any]:
     system_prompt = """
-You are a YouTube thumbnail visual director. Choose visual subjects specifically for
-the supplied video title. Return strict JSON with one top-level key:
-thumbnail_subjects.
+You are a YouTube audience-research and packaging strategist. Analyze the exact video
+idea against only the supplied YouTube evidence. Return strict JSON with exactly these
+top-level keys: viewer_intent, content_type, title_patterns, emotional_angles,
+thumbnail_subjects, seo_keywords.
 
-thumbnail_subjects rules:
-- Return exactly 3 concise, concrete, visually renderable subject descriptions.
-- Every subject must help communicate this exact title and viewer promise.
+Grounding rules:
+- Treat the video idea as the primary topic and promise.
+- Discard evidence that is topically unrelated, even if YouTube returned it.
+- Do not invent search demand, audience behavior, features, results, or facts.
+- Make every field specific enough that it would not fit an unrelated video title.
+
+Field rules:
+- viewer_intent: one concise sentence describing the exact outcome, question, or
+  tension this title's likely viewer wants resolved. Do not use a generic template.
+- content_type: one precise format description for this title, not a broad fixed
+  bucket when a more specific format is supported.
+- title_patterns: exactly 3 concise reusable title structures grounded in recurring
+  structures in the relevant evidence. Use placeholders such as [topic], [number],
+  [result], or [constraint]; do not copy an evidence title.
+- emotional_angles: exactly 3 distinct, title-specific viewer motivations or tensions.
+  Explain each in a short phrase; avoid generic labels unsupported by the title.
+- thumbnail_subjects: exactly 3 concise, concrete, visually renderable subject
+  descriptions.
+- thumbnail_subjects must help communicate this exact title and viewer promise.
 - Prefer specific people, products, tools, objects, actions, outcomes, or visual
   metaphors named or clearly implied by the title and research.
 - Make the three subjects work together in one uncluttered thumbnail composition.
@@ -429,14 +428,32 @@ thumbnail_subjects rules:
   layout instructions, or explanations.
 - Do not copy the subjects of evidence thumbnails; use evidence titles only to
   understand topic context.
+- seo_keywords: 4 to 6 natural search phrases tightly relevant to the exact idea.
+  Prefer supported phrases from search suggestions, titles, and tags. Exclude
+  unrelated phrases and generic standalone words such as idea, video, or tutorial.
 """.strip()
+    evidence = [
+        {
+            "title": video.get("title", ""),
+            "description": video.get("description", "")[:300],
+            "tags": normalize_string_list(video.get("tags", []))[:8],
+            "view_count": video.get("view_count", 0),
+            "like_count": video.get("like_count", 0),
+        }
+        for video in videos[:10]
+    ]
     user_payload = {
         "video_title": idea,
-        "viewer_intent": viewer_intent,
-        "content_type": content_type,
-        "seo_keywords": seo_keywords[:6],
-        "youtube_evidence_titles": evidence_titles[:10],
+        "youtube_query": query,
+        "relevant_search_suggestions": search_suggestions[:10],
+        "relevant_youtube_evidence": evidence,
     }
+    fallback = build_contextual_intent_fallback(
+        idea=idea,
+        query=query,
+        videos=videos,
+        search_suggestions=search_suggestions,
+    )
 
     try:
         generated = TextGenerationClient().generate_json(
@@ -446,19 +463,151 @@ thumbnail_subjects rules:
         )
     except ValidationError:
         logger.warning(
-            "Thumbnail subject generation failed; using the video title as context."
+            "Contextual intent generation failed; using evidence-derived fallback."
         )
-        return [idea.strip()]
+        return fallback
 
-    subjects = normalize_string_list(
-        generated.get("thumbnail_subjects", [])
-        if isinstance(generated, dict)
-        else []
+    generated = generated if isinstance(generated, dict) else {}
+    generated_keywords = normalize_generated_list(
+        generated.get("seo_keywords"),
+        fallback["seo_keywords"],
+        limit=6,
     )
-    subjects = [subject for subject in subjects if subject.lower() != idea.lower()]
-    if not subjects:
-        return [idea.strip()]
-    return subjects[:3]
+    grounded_keywords = filter_relevant_phrases(
+        idea=idea,
+        phrases=generated_keywords,
+    )
+    return {
+        "viewer_intent": normalize_generated_text(
+            generated.get("viewer_intent"),
+            fallback["viewer_intent"],
+        ),
+        "content_type": normalize_generated_text(
+            generated.get("content_type"),
+            fallback["content_type"],
+        ),
+        "title_patterns": normalize_generated_list(
+            generated.get("title_patterns"),
+            fallback["title_patterns"],
+            limit=3,
+        ),
+        "emotional_angles": normalize_generated_list(
+            generated.get("emotional_angles"),
+            fallback["emotional_angles"],
+            limit=3,
+        ),
+        "thumbnail_subjects": normalize_generated_list(
+            generated.get("thumbnail_subjects"),
+            fallback["thumbnail_subjects"],
+            limit=3,
+        ),
+        "seo_keywords": grounded_keywords or fallback["seo_keywords"],
+    }
+
+
+def build_contextual_intent_fallback(
+    *,
+    idea: str,
+    query: str,
+    videos: list[dict[str, Any]],
+    search_suggestions: list[str],
+) -> dict[str, Any]:
+    evidence_titles = [video["title"] for video in videos if video.get("title")]
+    patterns = [generalize_evidence_title(title, idea) for title in evidence_titles[:3]]
+    patterns = [pattern for pattern in patterns if pattern]
+    keywords = extract_seo_keywords(
+        idea=idea,
+        videos=videos,
+        search_suggestions=search_suggestions,
+    )
+    search_context = ", ".join(search_suggestions[:2]) or query
+    return {
+        "viewer_intent": (
+            f"Viewers researching {search_context} want the specific promise in "
+            f"'{idea}' demonstrated clearly."
+        ),
+        "content_type": f"Evidence-based video matching the promise in '{idea}'",
+        "title_patterns": patterns or [generalize_evidence_title(idea, idea)],
+        "emotional_angles": [],
+        "thumbnail_subjects": [idea.strip()],
+        "seo_keywords": keywords or [query],
+    }
+
+
+def normalize_generated_text(value: Any, fallback: str) -> str:
+    normalized = str(value).strip() if value is not None else ""
+    return normalized or fallback
+
+
+def normalize_generated_list(value: Any, fallback: list[str], *, limit: int) -> list[str]:
+    items = normalize_string_list(value)
+    unique_items = list(dict.fromkeys(items))
+    return (unique_items or fallback)[:limit]
+
+
+def intent_topic_terms(idea: str) -> set[str]:
+    generic_terms = {
+        "best",
+        "guide",
+        "idea",
+        "ideas",
+        "review",
+        "test",
+        "tested",
+        "top",
+        "tutorial",
+        "video",
+    }
+    return {
+        word
+        for word in re.findall(r"[a-zA-Z0-9]+", idea.lower())
+        if word not in STOP_WORDS
+        and word not in generic_terms
+        and not word.isdigit()
+        and len(word) > 2
+    }
+
+
+def filter_relevant_phrases(*, idea: str, phrases: list[str]) -> list[str]:
+    topic_terms = intent_topic_terms(idea)
+    if not topic_terms:
+        return phrases
+    return [
+        phrase
+        for phrase in phrases
+        if topic_terms.intersection(re.findall(r"[a-zA-Z0-9]+", phrase.lower()))
+    ]
+
+
+def filter_relevant_intent_videos(
+    *,
+    idea: str,
+    videos: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    topic_terms = intent_topic_terms(idea)
+    if not topic_terms:
+        return videos
+    relevant = []
+    for video in videos:
+        evidence_text = " ".join(
+            [
+                str(video.get("title", "")),
+                str(video.get("description", ""))[:300],
+                " ".join(normalize_string_list(video.get("tags", []))),
+            ]
+        ).lower()
+        evidence_terms = set(re.findall(r"[a-zA-Z0-9]+", evidence_text))
+        if topic_terms.intersection(evidence_terms):
+            relevant.append(video)
+    return relevant
+
+
+def generalize_evidence_title(title: str, idea: str) -> str:
+    pattern = re.sub(r"\b\d+\b", "[number]", title.strip())
+    for term in sorted(intent_topic_terms(idea), key=len, reverse=True):
+        pattern = re.sub(rf"\b{re.escape(term)}\b", "[topic]", pattern, flags=re.I)
+    pattern = re.sub(r"(?:\[topic\]\s*){2,}", "[topic] ", pattern)
+    return " ".join(pattern.split()).strip()
 
 
 def prepare_thumbnail_from_intent(
@@ -613,6 +762,126 @@ def generate_content_package(
         "script": package_plan["script"],
         "edit_options": package_plan["edit_options"],
     }
+
+
+def create_content_package_job(*, user, request_payload: dict[str, Any]):
+    return ContentPackageJob.objects.create(
+        user=user,
+        request_payload=request_payload,
+    )
+
+
+def get_content_package_job(*, user, job_id):
+    try:
+        job = ContentPackageJob.objects.get(id=job_id, user=user)
+    except ContentPackageJob.DoesNotExist as exc:
+        raise NotFound("Content package job was not found.") from exc
+
+    stale_before = timezone.now() - timedelta(
+        seconds=settings.CONTENT_PACKAGE_JOB_STALE_SECONDS
+    )
+    is_stale_pending = (
+        job.status == ContentPackageJob.Status.PENDING
+        and job.created_at < stale_before
+    )
+    is_stale_processing = (
+        job.status == ContentPackageJob.Status.PROCESSING
+        and job.started_at
+        and job.started_at < stale_before
+    )
+    if is_stale_pending or is_stale_processing:
+        ContentPackageJob.objects.filter(id=job.id, status=job.status).update(
+            status=ContentPackageJob.Status.FAILED,
+            stage="failed",
+            error_code="generation_timed_out",
+            error_message="Content package generation timed out. Please try again.",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        job.refresh_from_db()
+    return job
+
+
+def mark_content_package_job_dispatched(*, job_id, task_id: str):
+    ContentPackageJob.objects.filter(id=job_id).update(
+        celery_task_id=task_id,
+        updated_at=timezone.now(),
+    )
+
+
+def mark_content_package_job_queue_failed(*, job_id):
+    ContentPackageJob.objects.filter(
+        id=job_id,
+        status=ContentPackageJob.Status.PENDING,
+    ).update(
+        status=ContentPackageJob.Status.FAILED,
+        stage="failed",
+        error_code="queue_unavailable",
+        error_message="Generation could not be started. Please try again.",
+        finished_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+
+
+def start_content_package_job(*, job_id):
+    with transaction.atomic():
+        try:
+            job = ContentPackageJob.objects.select_for_update().get(id=job_id)
+        except ContentPackageJob.DoesNotExist:
+            logger.warning("ideas.package_job.not_found job_id=%s", job_id)
+            return None
+
+        if job.status != ContentPackageJob.Status.PENDING:
+            logger.info(
+                "ideas.package_job.skipped job_id=%s status=%s",
+                job_id,
+                job.status,
+            )
+            return None
+
+        job.status = ContentPackageJob.Status.PROCESSING
+        job.stage = "generating_package"
+        job.started_at = timezone.now()
+        job.error_code = ""
+        job.error_message = ""
+        job.save(
+            update_fields=[
+                "status",
+                "stage",
+                "started_at",
+                "error_code",
+                "error_message",
+                "updated_at",
+            ]
+        )
+        return job
+
+
+def mark_content_package_job_succeeded(*, job_id, result: dict[str, Any]):
+    ContentPackageJob.objects.filter(
+        id=job_id,
+        status=ContentPackageJob.Status.PROCESSING,
+    ).update(
+        status=ContentPackageJob.Status.SUCCEEDED,
+        stage="completed",
+        result=result,
+        finished_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+
+
+def mark_content_package_job_failed(*, job_id):
+    ContentPackageJob.objects.filter(
+        id=job_id,
+        status=ContentPackageJob.Status.PROCESSING,
+    ).update(
+        status=ContentPackageJob.Status.FAILED,
+        stage="failed",
+        error_code="generation_failed",
+        error_message="Content package generation failed. Please try again.",
+        finished_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
 
 
 def generate_package_plan_with_llm(
@@ -1076,95 +1345,6 @@ def extract_short_topic(idea: str) -> str:
         if word not in STOP_WORDS and len(word) > 2
     ]
     return " ".join(words[:2]) or "this topic"
-
-
-def detect_content_type(*, titles: list[str], combined_text: str) -> str:
-    title_text = " ".join(titles).lower()
-    checks = [
-        ("tutorial / how-to", ("how to", "tutorial", "step by step", "guide")),
-        ("listicle / tool recommendation", ("best", "top", "tools", "apps")),
-        ("comparison / review", (" vs ", "versus", "review", "compared", "comparison")),
-        ("mistakes / warning", ("mistake", "avoid", "warning", "stop", "don't")),
-        ("explainer / education", ("explained", "what is", "why", "beginner")),
-        ("news / update", ("new", "update", "changed", "latest", "launched")),
-    ]
-
-    for content_type, markers in checks:
-        if any(marker in title_text for marker in markers):
-            return content_type
-    if any(marker in combined_text for marker in ("best", "tools", "top")):
-        return "listicle / tool recommendation"
-    return "explainer / education"
-
-
-def detect_title_patterns(titles: list[str]) -> list[str]:
-    patterns = []
-    title_text = " ".join(titles).lower()
-    pattern_checks = [
-        ("Best [topic]", ("best",)),
-        ("Top [number] [topic]", ("top",)),
-        ("[topic] that save time", ("save time", "hours", "faster")),
-        ("[topic] that replace work", ("replace", "automate", "automation")),
-        ("How to use [topic]", ("how to", "tutorial")),
-        ("[topic] mistakes to avoid", ("mistake", "avoid", "warning")),
-        ("I tested [topic]", ("i tested", "tested")),
-        ("[topic] explained", ("explained", "what is")),
-    ]
-
-    for pattern, markers in pattern_checks:
-        if any(marker in title_text for marker in markers):
-            patterns.append(pattern)
-
-    if not patterns:
-        patterns = ["Best [topic]", "How to use [topic]", "[topic] explained"]
-    return patterns[:3]
-
-
-def detect_emotional_angles(combined_text: str) -> list[str]:
-    angles = []
-    checks = [
-        ("shock", ("shocking", "changed", "replace", "secret", "insane")),
-        ("fear of falling behind", ("warning", "mistake", "avoid", "stop", "risk")),
-        ("productivity gain", ("save time", "faster", "automate", "productivity")),
-        ("curiosity gap", ("nobody", "hidden", "unknown", "why", "secret")),
-        ("beginner confidence", ("beginner", "easy", "simple", "step by step")),
-    ]
-
-    for angle, markers in checks:
-        if any(marker in combined_text for marker in markers):
-            angles.append(angle)
-
-    if not angles:
-        angles = ["curiosity gap", "productivity gain", "shock"]
-    return angles[:3]
-
-
-def build_viewer_intent(
-    *,
-    keywords: list[str],
-    content_type: str,
-    search_suggestions: list[str] | None = None,
-) -> str:
-    topic = keywords[0] if keywords else "this topic"
-    search_suggestions = normalize_string_list(search_suggestions or [])
-    audience_subject = "people"
-    if search_suggestions:
-        exact_searches = ", ".join(search_suggestions[:3])
-        audience_subject = (
-            f"people are searching YouTube for {exact_searches}; they"
-        )
-
-    if "tool recommendation" in content_type:
-        return f"{audience_subject} want the best options and practical reasons to use them"
-    if "tutorial" in content_type:
-        return f"{audience_subject} want a clear step-by-step way to use {topic}"
-    if "comparison" in content_type:
-        return f"{audience_subject} want to compare {topic} options before choosing one"
-    if "warning" in content_type:
-        return f"{audience_subject} want to avoid mistakes and risks around {topic}"
-    if "news" in content_type:
-        return f"{audience_subject} want the latest update and why {topic} matters now"
-    return f"{audience_subject} want a clear explanation of {topic} and what to do next"
 
 
 def extract_seo_keywords(

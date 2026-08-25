@@ -70,6 +70,23 @@ REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'core.exceptions.api_exception_handler',
 }
 
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "ideas.performance": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+
 # CORS configuration — allows the frontend (Lovable, mobile, etc.) to call
 # this API from a browser. Origins are env-driven so preview domains can be
 # added without code changes. CorsMiddleware intercepts OPTIONS preflight
@@ -290,6 +307,21 @@ OPENAI_TIMEOUT_SECONDS = int(os.getenv('OPENAI_TIMEOUT_SECONDS', '120'))
 CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME', '')
 CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
+CLOUDINARY_TIMEOUT_SECONDS = int(os.getenv('CLOUDINARY_TIMEOUT_SECONDS', '60'))
+
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_TIMEOUT = 5
+CELERY_TASK_PUBLISH_RETRY = False
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv('CELERY_TASK_SOFT_TIME_LIMIT', '420'))
+CELERY_TASK_TIME_LIMIT = int(os.getenv('CELERY_TASK_TIME_LIMIT', '450'))
+CONTENT_PACKAGE_JOB_STALE_SECONDS = int(
+    os.getenv('CONTENT_PACKAGE_JOB_STALE_SECONDS', '600')
+)
 
 # Lemon Squeezy billing integration
 LEMON_SQUEEZY_API_KEY = os.getenv('LEMON_SQUEEZY_API_KEY', '')

@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import re
+import time
 import uuid
 import urllib.error
 import urllib.request
@@ -16,6 +18,7 @@ from rest_framework.exceptions import ValidationError
 
 
 OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations"
+performance_logger = logging.getLogger("ideas.performance")
 
 
 class OpenAIImageClient:
@@ -77,12 +80,15 @@ class OpenAIImageClient:
             },
         )
 
+        started_at = time.perf_counter()
+        outcome = "failed"
         try:
             with urllib.request.urlopen(
                 request,
                 timeout=settings.OPENAI_TIMEOUT_SECONDS,
             ) as response:
                 data = json.loads(response.read().decode("utf-8"))
+            outcome = "succeeded"
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             raise ValidationError(
@@ -95,6 +101,13 @@ class OpenAIImageClient:
             )
         except Exception as exc:
             raise ValidationError({"openai_image_api": f"Failed to generate thumbnail: {exc}"})
+        finally:
+            performance_logger.info(
+                "ideas.provider_timing provider=openai operation=generate_image "
+                "outcome=%s duration_seconds=%.3f",
+                outcome,
+                time.perf_counter() - started_at,
+            )
 
         try:
             image_base64 = data["data"][0]["b64_json"]
@@ -131,6 +144,8 @@ class OpenAIImageClient:
         image_file = io.BytesIO(image_bytes)
         image_file.name = f"{asset_name}.{output_format}"
 
+        started_at = time.perf_counter()
+        outcome = "failed"
         try:
             upload_result = cloudinary.uploader.upload(
                 image_file,
@@ -138,10 +153,19 @@ class OpenAIImageClient:
                 resource_type="image",
                 format=output_format,
                 overwrite=False,
+                timeout=settings.CLOUDINARY_TIMEOUT_SECONDS,
             )
+            outcome = "succeeded"
         except Exception as exc:
             raise ValidationError(
                 {"cloudinary_upload": f"Failed to upload generated thumbnail: {exc}"}
+            )
+        finally:
+            performance_logger.info(
+                "ideas.provider_timing provider=cloudinary operation=upload_image "
+                "outcome=%s duration_seconds=%.3f",
+                outcome,
+                time.perf_counter() - started_at,
             )
 
         secure_url = str(upload_result.get("secure_url", "")).strip()

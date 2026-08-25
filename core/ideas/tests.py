@@ -15,10 +15,11 @@ from categories.models import Category
 from .deepseek_client import DeepSeekClient
 from .groq_client import GroqClient
 from .llm_client import TextGenerationClient
-from .models import IdeaCandidate
+from .models import ContentPackageJob, IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .services import (
-    generate_contextual_thumbnail_subjects,
+    filter_relevant_phrases,
+    generate_contextual_intent_analysis,
     normalize_script_guide,
     refresh_all_ideas_for_cron,
     research_youtube_intent_for_idea,
@@ -178,32 +179,66 @@ class TextGenerationClientTestCase(APITestCase):
         mock_groq_client.return_value.generate_json.assert_called_once()
 
 
-class ContextualThumbnailSubjectsTestCase(APITestCase):
+class ContextualIntentAnalysisTestCase(APITestCase):
     @patch("ideas.services.TextGenerationClient")
-    def test_uses_title_specific_subjects_from_llm(self, mock_text_client_class):
+    def test_uses_title_specific_analysis_from_llm(self, mock_text_client_class):
         mock_text_client_class.return_value.generate_json.return_value = {
+            "viewer_intent": (
+                "Creators want proof of which AI tools remove real workflow steps."
+            ),
+            "content_type": "hands-on creator workflow tool comparison",
+            "title_patterns": [
+                "I Tested [number] [topic] for [workflow]",
+                "[topic]: Which One Actually [result]?",
+                "[number] [topic] Ranked by [constraint]",
+            ],
+            "emotional_angles": [
+                "relief from repetitive production work",
+                "skepticism about exaggerated automation claims",
+                "confidence in choosing one practical tool",
+            ],
             "thumbnail_subjects": [
                 "creator comparing five completed automation results",
                 "content calendar filling itself with finished posts",
                 "stack of repetitive tasks reduced to one workflow",
-            ]
+            ],
+            "seo_keywords": [
+                "ai tools for creator workflows",
+                "creator automation tool comparison",
+                "automate content creation workflow",
+            ],
         }
 
-        result = generate_contextual_thumbnail_subjects(
+        result = generate_contextual_intent_analysis(
             idea="I Tested 5 AI Tools That Automate a Creator Workflow",
-            viewer_intent="creators want to know which tools save practical time",
-            content_type="comparison / review",
-            seo_keywords=["creator automation", "ai workflow"],
-            evidence_titles=["Testing Current Creator Automation Tools"],
+            query="tested ai tools automate creator workflow",
+            videos=[
+                {
+                    "title": "Testing Current Creator Automation Tools",
+                    "description": "A workflow comparison.",
+                    "tags": ["creator automation"],
+                    "view_count": 1000,
+                    "like_count": 100,
+                }
+            ],
+            search_suggestions=["ai tools for creator workflows"],
         )
 
         self.assertEqual(
-            result,
+            result["thumbnail_subjects"],
             [
                 "creator comparing five completed automation results",
                 "content calendar filling itself with finished posts",
                 "stack of repetitive tasks reduced to one workflow",
             ],
+        )
+        self.assertEqual(
+            result["content_type"],
+            "hands-on creator workflow tool comparison",
+        )
+        self.assertEqual(
+            result["emotional_angles"][0],
+            "relief from repetitive production work",
         )
         payload = mock_text_client_class.return_value.generate_json.call_args.kwargs[
             "user_payload"
@@ -214,7 +249,7 @@ class ContextualThumbnailSubjectsTestCase(APITestCase):
         )
 
     @patch("ideas.services.TextGenerationClient")
-    def test_falls_back_to_exact_title_when_both_llms_fail(
+    def test_falls_back_to_title_and_evidence_when_both_llms_fail(
         self,
         mock_text_client_class,
     ):
@@ -222,17 +257,39 @@ class ContextualThumbnailSubjectsTestCase(APITestCase):
             {"llm_api": "Unavailable"}
         )
 
-        result = generate_contextual_thumbnail_subjects(
+        result = generate_contextual_intent_analysis(
             idea="A Solar Generator Powered My Studio for 24 Hours",
-            viewer_intent="viewers want proof that the generator can run a studio",
-            content_type="comparison / review",
-            seo_keywords=["solar generator", "studio power"],
-            evidence_titles=[],
+            query="solar generator powered studio 24 hours",
+            videos=[
+                {
+                    "title": "Testing a Solar Generator for 24 Hours",
+                    "description": "Studio power test.",
+                    "tags": ["solar generator", "studio power"],
+                }
+            ],
+            search_suggestions=["solar generator for studio"],
+        )
+
+        self.assertEqual(
+            result["thumbnail_subjects"],
+            ["A Solar Generator Powered My Studio for 24 Hours"],
+        )
+        self.assertIn("solar generator", result["seo_keywords"])
+        self.assertEqual(result["emotional_angles"], [])
+
+    def test_filters_unrelated_search_suggestions(self):
+        result = filter_relevant_phrases(
+            idea="Fallout Beginner Survival Tutorial",
+            phrases=[
+                "fallout beginner guide",
+                "fallout survival tutorial",
+                "outfit idea",
+            ],
         )
 
         self.assertEqual(
             result,
-            ["A Solar Generator Powered My Studio for 24 Hours"],
+            ["fallout beginner guide", "fallout survival tutorial"],
         )
 
 
@@ -701,11 +758,31 @@ class IdeasAPITestCase(APITestCase):
         mock_text_client_class,
     ):
         mock_text_client_class.return_value.generate_json.return_value = {
+            "viewer_intent": (
+                "Creators want to understand how AI agents move a real content task "
+                "from research to a finished draft."
+            ),
+            "content_type": "beginner creator-workflow demonstration",
+            "title_patterns": [
+                "How [topic] Moves from [input] to [result]",
+                "[topic] Explained Through One Real [workflow]",
+                "Build Your First [topic] for [audience]",
+            ],
+            "emotional_angles": [
+                "confidence to build a first working agent",
+                "clarity about what happens between workflow steps",
+                "relief from manually moving research into drafts",
+            ],
             "thumbnail_subjects": [
                 "creator arranging connected AI agent task cards",
                 "automated research task passing into a draft",
                 "finished video package produced by an agent workflow",
-            ]
+            ],
+            "seo_keywords": [
+                "ai agents for creators",
+                "ai agent workflow tutorial",
+                "creator automation agents",
+            ],
         }
         mock_suggest_client_class.return_value.fetch_suggestions.return_value = [
             "ai agents for beginners",
@@ -747,8 +824,12 @@ class IdeasAPITestCase(APITestCase):
                 "ai agents explained",
             ],
         )
-        self.assertEqual(result["seo_keywords"][0], "ai agents beginners")
-        self.assertIn("ai agents tutorial", result["viewer_intent"])
+        self.assertEqual(result["seo_keywords"][0], "ai agents for creators")
+        self.assertIn("research to a finished draft", result["viewer_intent"])
+        self.assertEqual(
+            result["content_type"],
+            "beginner creator-workflow demonstration",
+        )
         self.assertEqual(
             result["thumbnail_subjects"],
             [
@@ -912,7 +993,7 @@ class IdeasAPITestCase(APITestCase):
             "profile_or_upload",
         )
 
-    @patch("ideas.views.generate_content_package")
+    @patch("ideas.views.generate_content_package_task.apply_async")
     def test_generate_content_package(self, mock_generate_content_package):
         mock_generate_content_package.return_value = {
             "thumbnail": {
@@ -968,6 +1049,7 @@ class IdeasAPITestCase(APITestCase):
                 "Replace background",
             ],
         }
+        mock_generate_content_package.return_value = MagicMock(id="task-1")
         youtube_intent = {
             "viewer_intent": "people want AI tools that save time and automate work",
             "content_type": "listicle / tool recommendation",
@@ -1008,28 +1090,19 @@ class IdeasAPITestCase(APITestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(
             response.data["message"],
-            "content package generated successfully",
+            "content package generation started",
         )
-        self.assertEqual(
-            response.data["data"]["thumbnail"]["url"],
-            "https://res.cloudinary.com/demo/image/upload/test.png",
+        self.assertEqual(response.data["data"]["status"], "pending")
+        job = ContentPackageJob.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(job.user, self.user)
+        self.assertEqual(job.celery_task_id, "task-1")
+        mock_generate_content_package.assert_called_once_with(
+            args=[str(job.id)],
+            retry=False,
         )
-        self.assertEqual(
-            response.data["data"]["thumbnail"]["public_id"],
-            "creatorintent/generated_thumbnails/test",
-        )
-        self.assertEqual(
-            response.data["data"]["seo"]["title"],
-            "5 AI Tools That Can Replace Your Assistant",
-        )
-        self.assertEqual(
-            response.data["data"]["script"]["format"],
-            "creator_talking_guide",
-        )
-        mock_generate_content_package.assert_called_once()
 
     def test_prepare_thumbnail_requires_youtube_intent_shape(self):
         url = reverse("ideas-thumbnail-preparation")

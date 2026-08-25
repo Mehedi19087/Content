@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import urllib.error
@@ -12,6 +13,7 @@ from rest_framework.exceptions import ValidationError
 
 
 GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
+performance_logger = logging.getLogger("ideas.performance")
 
 
 class GroqClient:
@@ -54,7 +56,18 @@ class GroqClient:
             },
         )
 
-        data = self._send_request(request)
+        started_at = time.perf_counter()
+        outcome = "failed"
+        try:
+            data = self._send_request(request)
+            outcome = "succeeded"
+        finally:
+            performance_logger.info(
+                "ideas.provider_timing provider=groq operation=generate_json "
+                "outcome=%s duration_seconds=%.3f",
+                outcome,
+                time.perf_counter() - started_at,
+            )
 
         try:
             content = data["choices"][0]["message"]["content"]

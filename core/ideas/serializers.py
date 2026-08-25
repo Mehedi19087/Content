@@ -210,3 +210,15 @@ class ResponseGeneratePackageSerializer(serializers.Serializer):
         child=serializers.CharField(),
         read_only=True,
     )
+
+
+class ResponseContentPackageJobSerializer(serializers.Serializer):
+    id = serializers.UUIDField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    stage = serializers.CharField(read_only=True)
+    result = ResponseGeneratePackageSerializer(read_only=True, allow_null=True)
+    error_code = serializers.CharField(read_only=True, allow_blank=True)
+    error_message = serializers.CharField(read_only=True, allow_blank=True)
+    created_at = serializers.DateTimeField(read_only=True)
+    started_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    finished_at = serializers.DateTimeField(read_only=True, allow_null=True)

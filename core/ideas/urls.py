@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    ContentPackageJobDetailAPIView,
     CronRefreshIdeasAPIView,
     GeneratePackageAPIView,
     ThumbnailPreparationAPIView,
@@ -31,5 +32,10 @@ urlpatterns = [
         "ideas/generate-package/",
         GeneratePackageAPIView.as_view(),
         name="ideas-generate-package",
+    ),
+    path(
+        "ideas/generation-jobs/<uuid:job_id>/",
+        ContentPackageJobDetailAPIView.as_view(),
+        name="ideas-generation-job-detail",
     ),
 ]

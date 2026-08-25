@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -10,6 +12,7 @@ from rest_framework.exceptions import ValidationError
 
 
 DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions"
+performance_logger = logging.getLogger("ideas.performance")
 
 
 class DeepSeekClient:
@@ -55,12 +58,15 @@ class DeepSeekClient:
             },
         )
 
+        started_at = time.perf_counter()
+        outcome = "failed"
         try:
             with urllib.request.urlopen(
                 request,
                 timeout=settings.DEEPSEEK_TIMEOUT_SECONDS,
             ) as response:
                 data = json.loads(response.read().decode("utf-8"))
+            outcome = "succeeded"
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             raise ValidationError(
@@ -75,6 +81,13 @@ class DeepSeekClient:
             raise ValidationError(
                 {"deepseek_api": f"Failed to generate content: {exc}"}
             ) from exc
+        finally:
+            performance_logger.info(
+                "ideas.provider_timing provider=deepseek operation=generate_json "
+                "outcome=%s duration_seconds=%.3f",
+                outcome,
+                time.perf_counter() - started_at,
+            )
 
         try:
             content = data["choices"][0]["message"]["content"]
