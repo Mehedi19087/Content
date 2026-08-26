@@ -10,7 +10,11 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from .models import ContentPackageJob
-from .tasks import generate_content_package_task
+from .tasks import (
+    generate_content_package_task,
+    generate_content_script_task,
+    generate_youtube_intent_task,
+)
 
 
 User = get_user_model()
@@ -40,6 +44,24 @@ def package_request_payload():
             }
         ],
         "creator_image_choice": {"skip_creator_image": True},
+    }
+
+
+def research_request_payload():
+    return {
+        "idea": "5 AI tools that can replace your assistant",
+        "region_code": "US",
+        "language_code": "en",
+        "max_results": 5,
+    }
+
+
+def script_request_payload():
+    package = package_request_payload()
+    return {
+        "idea": package["idea"],
+        "youtube_intent": package["youtube_intent"],
+        "seo": {"title": "5 AI Tools That Save Creators Time"},
     }
 
 
@@ -135,6 +157,59 @@ class ContentPackageJobAPITestCase(APITestCase):
             "generation_timed_out",
         )
 
+    @patch("ideas.views.generate_youtube_intent_task.apply_async")
+    def test_start_research_returns_background_job(self, mock_delay):
+        mock_delay.return_value.id = "research-task-id"
+
+        response = self.client.post(
+            reverse("ideas-youtube-intent"),
+            research_request_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        job = ContentPackageJob.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(job.job_type, ContentPackageJob.JobType.RESEARCH)
+        self.assertEqual(job.celery_task_id, "research-task-id")
+
+    @patch("ideas.views.generate_youtube_intent_task.apply_async")
+    def test_research_reuses_recent_successful_result(self, mock_delay):
+        cached = ContentPackageJob.objects.create(
+            user=self.user,
+            job_type=ContentPackageJob.JobType.RESEARCH,
+            request_payload=research_request_payload(),
+            status=ContentPackageJob.Status.SUCCEEDED,
+            stage="completed",
+            result={"viewer_intent": "Creators want to save time."},
+            finished_at=timezone.now(),
+        )
+
+        response = self.client.post(
+            reverse("ideas-youtube-intent"),
+            research_request_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(response.data["data"]["id"], str(cached.id))
+        self.assertEqual(response.data["data"]["status"], "succeeded")
+        mock_delay.assert_not_called()
+
+    @patch("ideas.views.generate_content_script_task.apply_async")
+    def test_start_script_returns_background_job(self, mock_delay):
+        mock_delay.return_value.id = "script-task-id"
+
+        response = self.client.post(
+            reverse("ideas-generate-script"),
+            script_request_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        job = ContentPackageJob.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(job.job_type, ContentPackageJob.JobType.SCRIPT)
+        self.assertEqual(job.celery_task_id, "script-task-id")
+
 
 class ContentPackageTaskTestCase(TestCase):
     def setUp(self):
@@ -149,7 +224,6 @@ class ContentPackageTaskTestCase(TestCase):
         mock_generate_content_package.return_value = {
             "thumbnail": {"url": "https://example.com/image.png"},
             "seo": {"title": "AI tools"},
-            "script": {"format": "creator_talking_guide"},
             "edit_options": ["Change thumbnail text"],
         }
 
@@ -183,3 +257,33 @@ class ContentPackageTaskTestCase(TestCase):
         generate_content_package_task.run(str(self.job.id))
 
         mock_generate_content_package.assert_not_called()
+
+    @patch("ideas.tasks.research_youtube_intent_for_idea")
+    def test_research_task_saves_result(self, mock_research):
+        job = ContentPackageJob.objects.create(
+            user=self.user,
+            job_type=ContentPackageJob.JobType.RESEARCH,
+            request_payload=research_request_payload(),
+        )
+        mock_research.return_value = {"viewer_intent": "Creators want to save time."}
+
+        generate_youtube_intent_task.run(str(job.id))
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ContentPackageJob.Status.SUCCEEDED)
+        self.assertEqual(job.result["viewer_intent"], "Creators want to save time.")
+
+    @patch("ideas.tasks.generate_script_guide")
+    def test_script_task_saves_result(self, mock_generate_script):
+        job = ContentPackageJob.objects.create(
+            user=self.user,
+            job_type=ContentPackageJob.JobType.SCRIPT,
+            request_payload=script_request_payload(),
+        )
+        mock_generate_script.return_value = {"format": "creator_talking_guide"}
+
+        generate_content_script_task.run(str(job.id))
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ContentPackageJob.Status.SUCCEEDED)
+        self.assertEqual(job.result["format"], "creator_talking_guide")

@@ -7,6 +7,7 @@ import secrets
 import time
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Any
 
@@ -99,6 +100,17 @@ def get_active_ideas(
         "-trend_score",
         "-generated_at",
     )[:limit]
+
+
+def get_active_idea(*, idea_id: int) -> IdeaCandidate:
+    try:
+        return IdeaCandidate.objects.get(
+            id=idea_id,
+            is_active=True,
+            category__is_active=True,
+        )
+    except IdeaCandidate.DoesNotExist as exc:
+        raise NotFound("Idea was not found.") from exc
 
 
 def refresh_ideas_for_category(
@@ -281,27 +293,50 @@ def research_youtube_intent_for_idea(
     idea: str,
     region_code: str = "US",
     language_code: str = "en",
-    max_results: int = 10,
+    max_results: int = 5,
 ) -> dict[str, Any]:
     query = build_youtube_intent_query(idea)
-    search_suggestions = YouTubeSuggestClient().fetch_suggestions(
-        query=query,
-        region_code=region_code,
-        language_code=language_code,
-    )
     youtube_client = YouTubeClient()
-    search_results = youtube_client.search_videos_by_query(
-        query=query,
-        region_code=region_code,
-        language_code=language_code,
-        max_results=max_results,
-    )
+
+    def fetch_suggestions():
+        return _timed_research_provider_call(
+            provider="youtube_suggest",
+            operation="fetch_suggestions",
+            callback=lambda: YouTubeSuggestClient().fetch_suggestions(
+                query=query,
+                region_code=region_code,
+                language_code=language_code,
+            ),
+        )
+
+    def search_videos():
+        return _timed_research_provider_call(
+            provider="youtube",
+            operation="search_videos",
+            callback=lambda: youtube_client.search_videos_by_query(
+                query=query,
+                region_code=region_code,
+                language_code=language_code,
+                max_results=max_results,
+            ),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        suggestions_future = executor.submit(fetch_suggestions)
+        search_future = executor.submit(search_videos)
+        search_suggestions = suggestions_future.result()
+        search_results = search_future.result()
+
     video_ids = [item["video_id"] for item in search_results if item.get("video_id")]
 
     if not video_ids:
         raise ValidationError({"youtube_results": "No YouTube videos found for this idea."})
 
-    videos = youtube_client.fetch_videos_by_ids(video_ids)
+    videos = _timed_research_provider_call(
+        provider="youtube",
+        operation="fetch_video_details",
+        callback=lambda: youtube_client.fetch_videos_by_ids(video_ids),
+    )
     if not videos:
         raise ValidationError(
             {"youtube_results": "No YouTube video details found for this idea."}
@@ -319,6 +354,24 @@ def research_youtube_intent_for_idea(
         videos=normalized_videos,
         search_suggestions=search_suggestions,
     )
+
+
+def _timed_research_provider_call(*, provider: str, operation: str, callback):
+    started_at = time.perf_counter()
+    outcome = "failed"
+    try:
+        result = callback()
+        outcome = "succeeded"
+        return result
+    finally:
+        logging.getLogger("ideas.performance").info(
+            "ideas.provider_timing provider=%s operation=%s outcome=%s "
+            "duration_seconds=%.3f",
+            provider,
+            operation,
+            outcome,
+            time.perf_counter() - started_at,
+        )
 
 
 def build_youtube_intent_query(idea: str) -> str:
@@ -440,12 +493,12 @@ Field rules:
             "view_count": video.get("view_count", 0),
             "like_count": video.get("like_count", 0),
         }
-        for video in videos[:10]
+        for video in videos[:5]
     ]
     user_payload = {
         "video_title": idea,
         "youtube_query": query,
-        "relevant_search_suggestions": search_suggestions[:10],
+        "relevant_search_suggestions": search_suggestions[:5],
         "relevant_youtube_evidence": evidence,
     }
     fallback = build_contextual_intent_fallback(
@@ -759,7 +812,6 @@ def generate_content_package(
             "used_subjects": subject_plan,
         },
         "seo": package_plan["seo"],
-        "script": package_plan["script"],
         "edit_options": package_plan["edit_options"],
     }
 
@@ -767,6 +819,59 @@ def generate_content_package(
 def create_content_package_job(*, user, request_payload: dict[str, Any]):
     return ContentPackageJob.objects.create(
         user=user,
+        job_type=ContentPackageJob.JobType.PACKAGE,
+        request_payload=request_payload,
+    )
+
+
+def create_or_reuse_research_job(*, user, request_payload: dict[str, Any]):
+    active_job = (
+        ContentPackageJob.objects.filter(
+            user=user,
+            job_type=ContentPackageJob.JobType.RESEARCH,
+            request_payload=request_payload,
+            status__in=(
+                ContentPackageJob.Status.PENDING,
+                ContentPackageJob.Status.PROCESSING,
+            ),
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if active_job:
+        return active_job, False
+
+    cached_after = timezone.now() - timedelta(
+        seconds=settings.YOUTUBE_RESEARCH_CACHE_SECONDS
+    )
+    cached_job = (
+        ContentPackageJob.objects.filter(
+            user=user,
+            job_type=ContentPackageJob.JobType.RESEARCH,
+            request_payload=request_payload,
+            status=ContentPackageJob.Status.SUCCEEDED,
+            finished_at__gte=cached_after,
+        )
+        .order_by("-finished_at")
+        .first()
+    )
+    if cached_job:
+        return cached_job, False
+
+    return (
+        ContentPackageJob.objects.create(
+            user=user,
+            job_type=ContentPackageJob.JobType.RESEARCH,
+            request_payload=request_payload,
+        ),
+        True,
+    )
+
+
+def create_script_job(*, user, request_payload: dict[str, Any]):
+    return ContentPackageJob.objects.create(
+        user=user,
+        job_type=ContentPackageJob.JobType.SCRIPT,
         request_payload=request_payload,
     )
 
@@ -817,13 +922,18 @@ def mark_content_package_job_queue_failed(*, job_id):
         status=ContentPackageJob.Status.FAILED,
         stage="failed",
         error_code="queue_unavailable",
-        error_message="Generation could not be started. Please try again.",
+        error_message="The background job could not be started. Please try again.",
         finished_at=timezone.now(),
         updated_at=timezone.now(),
     )
 
 
-def start_content_package_job(*, job_id):
+def start_content_package_job(
+    *,
+    job_id,
+    expected_job_type=ContentPackageJob.JobType.PACKAGE,
+    stage="generating_package",
+):
     with transaction.atomic():
         try:
             job = ContentPackageJob.objects.select_for_update().get(id=job_id)
@@ -831,7 +941,10 @@ def start_content_package_job(*, job_id):
             logger.warning("ideas.package_job.not_found job_id=%s", job_id)
             return None
 
-        if job.status != ContentPackageJob.Status.PENDING:
+        if (
+            job.status != ContentPackageJob.Status.PENDING
+            or job.job_type != expected_job_type
+        ):
             logger.info(
                 "ideas.package_job.skipped job_id=%s status=%s",
                 job_id,
@@ -840,7 +953,7 @@ def start_content_package_job(*, job_id):
             return None
 
         job.status = ContentPackageJob.Status.PROCESSING
-        job.stage = "generating_package"
+        job.stage = stage
         job.started_at = timezone.now()
         job.error_code = ""
         job.error_message = ""
@@ -870,15 +983,20 @@ def mark_content_package_job_succeeded(*, job_id, result: dict[str, Any]):
     )
 
 
-def mark_content_package_job_failed(*, job_id):
+def mark_content_package_job_failed(
+    *,
+    job_id,
+    error_code="generation_failed",
+    error_message="Generation failed. Please try again.",
+):
     ContentPackageJob.objects.filter(
         id=job_id,
         status=ContentPackageJob.Status.PROCESSING,
     ).update(
         status=ContentPackageJob.Status.FAILED,
         stage="failed",
-        error_code="generation_failed",
-        error_message="Content package generation failed. Please try again.",
+        error_code=error_code,
+        error_message=error_message,
         finished_at=timezone.now(),
         updated_at=timezone.now(),
     )
@@ -895,7 +1013,7 @@ def generate_package_plan_with_llm(
     system_prompt = """
 You are a senior YouTube content strategist. Create one cohesive content package that
 matches the video idea, researched viewer intent, selected hook, and visual direction.
-Return strict JSON with exactly these top-level keys: thumbnail_prompt, seo, script,
+Return strict JSON with exactly these top-level keys: thumbnail_prompt, seo,
 edit_options.
 
 thumbnail_prompt rules:
@@ -916,52 +1034,6 @@ seo rules:
 - description should start with two strong SEO lines.
 - tags and keywords must be arrays.
 
-script rules:
-- Create a flexible creator talking guide, not a word-for-word screenplay.
-- Help the creator understand what the viewer wants, what the viewer needs to hear,
-  and what each part of the video must deliver.
-- Keep every section specific to this idea and the supplied viewer intent. Avoid
-  generic advice that could fit any video.
-- The opening must earn attention quickly, state the viewer's problem or desire, and
-  make a clear promise without repeating the thumbnail text mechanically.
-- Build a logical progression. Each section must answer a real viewer question and
-  move the viewer closer to the promised outcome.
-- Give concise talking points, a useful proof/example suggestion, and a retention
-  bridge for each section. Talking points are guidance the creator can express in
-  their own voice, not lines they must read verbatim.
-- Never invent personal experience, product testing, statistics, quotes, or factual
-  claims. Mark anything requiring research as a fact to verify before recording.
-- End with a useful takeaway and a natural call to action related to the topic.
-- script must use this exact JSON shape:
-  {
-    "format": "creator_talking_guide",
-    "audience_goal": "string",
-    "core_message": "string",
-    "opening": {
-      "viewer_need": "string",
-      "hook_guidance": "string",
-      "promise": "string"
-    },
-    "sections": [
-      {
-        "heading": "string",
-        "viewer_question": "string",
-        "talking_points": ["string"],
-        "proof_or_example": "string",
-        "retention_bridge": "string"
-      }
-    ],
-    "closing": {
-      "key_takeaway": "string",
-      "call_to_action": "string"
-    },
-    "delivery_notes": ["string"],
-    "facts_to_verify": ["string"],
-    "estimated_duration_minutes": 8
-  }
-- Provide 4 to 7 sections and enough substance for approximately 8 minutes while
-  keeping the guidance concise and easy to scan during recording preparation.
-
 edit_options must be 4 short strings.
 """.strip()
     user_payload = {
@@ -974,9 +1046,6 @@ edit_options must be 4 short strings.
             "thumbnail_size": "16:9",
             "thumbnail_text": selected_hook.get("thumbnail_text", ""),
             "seo_language": "English",
-            "script_language": "English",
-            "script_format": "creator_talking_guide",
-            "target_duration_minutes": 8,
         },
     }
     generated = TextGenerationClient().generate_json(
@@ -1021,12 +1090,6 @@ def normalize_generated_package_plan(
         idea=idea,
         youtube_intent=youtube_intent,
     )
-    script = normalize_script_guide(
-        script=generated.get("script"),
-        idea=idea,
-        youtube_intent=youtube_intent,
-    )
-
     edit_options = normalize_string_list(generated.get("edit_options", []))
     if len(edit_options) < 4:
         edit_options = [
@@ -1039,9 +1102,67 @@ def normalize_generated_package_plan(
     return {
         "thumbnail_prompt": thumbnail_prompt,
         "seo": seo,
-        "script": script,
         "edit_options": edit_options[:4],
     }
+
+
+def generate_script_guide(
+    *,
+    idea: str,
+    youtube_intent: dict[str, Any],
+    seo: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    system_prompt = """
+You are a senior YouTube script strategist. Create a flexible creator talking guide,
+not a word-for-word screenplay. Ground it in the exact video idea, viewer intent, and
+SEO package supplied by the user. Never invent personal experience, product testing,
+statistics, quotes, or factual claims. Put unsupported facts in facts_to_verify.
+
+Return strict JSON using exactly this shape:
+{
+  "format": "creator_talking_guide",
+  "audience_goal": "string",
+  "core_message": "string",
+  "opening": {
+    "viewer_need": "string",
+    "hook_guidance": "string",
+    "promise": "string"
+  },
+  "sections": [
+    {
+      "heading": "string",
+      "viewer_question": "string",
+      "talking_points": ["string"],
+      "proof_or_example": "string",
+      "retention_bridge": "string"
+    }
+  ],
+  "closing": {
+    "key_takeaway": "string",
+    "call_to_action": "string"
+  },
+  "delivery_notes": ["string"],
+  "facts_to_verify": ["string"],
+  "estimated_duration_minutes": 8
+}
+
+Provide 4 to 7 specific sections. Each section must answer a real viewer question and
+move toward the promised outcome. Keep the guide concise and useful while recording.
+""".strip()
+    generated = TextGenerationClient().generate_json(
+        system_prompt=system_prompt,
+        user_payload={
+            "idea": idea,
+            "youtube_intent": youtube_intent,
+            "seo": seo or {},
+        },
+        temperature=0.25,
+    )
+    return normalize_script_guide(
+        script=generated,
+        idea=idea,
+        youtube_intent=youtube_intent,
+    )
 
 
 def normalize_script_guide(

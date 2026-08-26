@@ -10,10 +10,10 @@ from .serializers import (
     CronRefreshIdeasSerializer,
     CronRefreshSummarySerializer,
     GeneratePackageSerializer,
+    GenerateScriptSerializer,
     ResponseContentPackageJobSerializer,
     ResponseIdeaCandidateSerializer,
     ResponseThumbnailPreparationSerializer,
-    ResponseYouTubeIntentResearchSerializer,
     ThumbnailPreparationSerializer,
     TrendingIdeaQuerySerializer,
     YouTubeIntentResearchSerializer,
@@ -21,16 +21,22 @@ from .serializers import (
 from .services import (
     IdeaCronConfigurationError,
     create_content_package_job,
+    create_or_reuse_research_job,
+    create_script_job,
     get_content_package_job,
+    get_active_idea,
     get_active_ideas,
     mark_content_package_job_dispatched,
     mark_content_package_job_queue_failed,
     prepare_thumbnail_from_intent,
     refresh_all_ideas_for_cron,
-    research_youtube_intent_for_idea,
     verify_idea_cron_secret,
 )
-from .tasks import generate_content_package_task
+from .tasks import (
+    generate_content_package_task,
+    generate_content_script_task,
+    generate_youtube_intent_task,
+)
 from users.permissions import (
     HasCreatorPermission,
     HasProPermission,
@@ -56,6 +62,21 @@ class TrendingIdeasAPIView(APIView):
         return Response(
             {
                 "message": "trending ideas retrieved successfully",
+                "data": response_serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class IdeaDetailAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, idea_id):
+        idea = get_active_idea(idea_id=idea_id)
+        response_serializer = ResponseIdeaCandidateSerializer(idea)
+        return Response(
+            {
+                "message": "idea retrieved successfully",
                 "data": response_serializer.data,
             },
             status=status.HTTP_200_OK,
@@ -116,14 +137,38 @@ class YouTubeIntentResearchAPIView(APIView):
         serializer.is_valid(raise_exception=True)
 
         try:
-            research = research_youtube_intent_for_idea(**serializer.validated_data)
-            response_serializer = ResponseYouTubeIntentResearchSerializer(research)
+            job, should_dispatch = create_or_reuse_research_job(
+                user=request.user,
+                request_payload=serializer.validated_data,
+            )
+            if should_dispatch:
+                try:
+                    task = generate_youtube_intent_task.apply_async(
+                        args=[str(job.id)],
+                        retry=False,
+                    )
+                except Exception:
+                    mark_content_package_job_queue_failed(job_id=job.id)
+                    logger.exception(
+                        "ideas.research_job.dispatch_failed job_id=%s", job.id
+                    )
+                    return Response(
+                        {"message": "YouTube research is temporarily unavailable."},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+                mark_content_package_job_dispatched(
+                    job_id=job.id,
+                    task_id=task.id,
+                )
+                job.refresh_from_db()
+
+            response_serializer = ResponseContentPackageJobSerializer(job)
             return Response(
                 {
-                    "message": "youtube intent research generated successfully",
+                    "message": "youtube intent research started",
                     "data": response_serializer.data,
                 },
-                status=status.HTTP_200_OK,
+                status=status.HTTP_202_ACCEPTED,
             )
         except ValidationError as exc:
             raise exc
@@ -132,6 +177,54 @@ class YouTubeIntentResearchAPIView(APIView):
             return Response(
                 {
                     "message": "Failed to research YouTube intent due to an internal server error.",
+                    "detail": str(exc),
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class GenerateScriptAPIView(APIView):
+    permission_classes = [HasCreatorPermission]
+
+    def post(self, request):
+        serializer = GenerateScriptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            job = create_script_job(
+                user=request.user,
+                request_payload=serializer.validated_data,
+            )
+            try:
+                task = generate_content_script_task.apply_async(
+                    args=[str(job.id)],
+                    retry=False,
+                )
+            except Exception:
+                mark_content_package_job_queue_failed(job_id=job.id)
+                logger.exception("ideas.script_job.dispatch_failed job_id=%s", job.id)
+                return Response(
+                    {"message": "Script generation is temporarily unavailable."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
+            mark_content_package_job_dispatched(job_id=job.id, task_id=task.id)
+            job.refresh_from_db()
+            response_serializer = ResponseContentPackageJobSerializer(job)
+            return Response(
+                {
+                    "message": "script generation started",
+                    "data": response_serializer.data,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except ValidationError as exc:
+            raise exc
+        except Exception as exc:
+            logger.exception("ideas.script.unexpected_failure")
+            return Response(
+                {
+                    "message": "Failed to start script generation.",
                     "detail": str(exc),
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -226,7 +319,9 @@ class GeneratePackageAPIView(APIView):
 
 
 class ContentPackageJobDetailAPIView(APIView):
-    permission_classes = [HasCreatorPermission]
+    # Starter users can create Research jobs; ownership checks in the service
+    # still prevent access to another user's package or script jobs.
+    permission_classes = [HasStarterPermission]
 
     def get(self, request, job_id):
         job = get_content_package_job(user=request.user, job_id=job_id)

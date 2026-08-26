@@ -4,6 +4,8 @@ from .views import (
     ContentPackageJobDetailAPIView,
     CronRefreshIdeasAPIView,
     GeneratePackageAPIView,
+    GenerateScriptAPIView,
+    IdeaDetailAPIView,
     ThumbnailPreparationAPIView,
     TrendingIdeasAPIView,
     YouTubeIntentResearchAPIView,
@@ -17,6 +19,7 @@ urlpatterns = [
         name="ideas-cron-refresh",
     ),
     path("ideas/", TrendingIdeasAPIView.as_view(), name="ideas-list"),
+    path("ideas/<int:idea_id>/", IdeaDetailAPIView.as_view(), name="ideas-detail"),
     path("ideas/trending/", TrendingIdeasAPIView.as_view(), name="ideas-trending"),
     path(
         "ideas/youtube-intent/",
@@ -32,6 +35,11 @@ urlpatterns = [
         "ideas/generate-package/",
         GeneratePackageAPIView.as_view(),
         name="ideas-generate-package",
+    ),
+    path(
+        "ideas/generate-script/",
+        GenerateScriptAPIView.as_view(),
+        name="ideas-generate-script",
     ),
     path(
         "ideas/generation-jobs/<uuid:job_id>/",

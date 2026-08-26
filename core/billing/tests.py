@@ -564,23 +564,15 @@ class TierPermissionHierarchyTests(APITestCase):
         self._authenticate_user_in_group("Creator Users")
         # Intent research requires Starter; a Creator user should pass.
         with patch(
-            "ideas.views.research_youtube_intent_for_idea",
-            return_value={
-                "viewer_intent": "Creators want useful AI tools",
-                "content_type": "tool recommendation",
-                "search_suggestions": [],
-                "title_patterns": [],
-                "emotional_angles": [],
-                "thumbnail_subjects": [],
-                "seo_keywords": [],
-            },
-        ):
+            "ideas.views.generate_youtube_intent_task.apply_async",
+        ) as mock_research_task:
+            mock_research_task.return_value.id = "research-task-id"
             response = self.client.post(
                 reverse("ideas-youtube-intent"),
                 {"idea": "AI tools for creators", "region_code": "US"},
                 format="json",
             )
-        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED, response.content)
 
 
 # ----------------------------------------------------------------------

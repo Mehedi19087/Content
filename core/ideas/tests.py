@@ -19,7 +19,9 @@ from .models import ContentPackageJob, IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .services import (
     filter_relevant_phrases,
+    generate_content_package,
     generate_contextual_intent_analysis,
+    generate_script_guide,
     normalize_script_guide,
     refresh_all_ideas_for_cron,
     research_youtube_intent_for_idea,
@@ -595,6 +597,25 @@ class IdeasAPITestCase(APITestCase):
         self.assertEqual(len(response.data["data"]), 1)
         self.assertEqual(response.data["data"][0]["title"], self.idea.title)
 
+    def test_retrieve_idea_returns_real_selected_title(self):
+        response = self.client.get(
+            reverse("ideas-detail", kwargs={"idea_id": self.idea.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["data"]["id"], self.idea.id)
+        self.assertEqual(response.data["data"]["title"], self.idea.title)
+
+    def test_retrieve_idea_rejects_missing_or_inactive_idea(self):
+        self.idea.is_active = False
+        self.idea.save(update_fields=["is_active", "updated_at"])
+
+        response = self.client.get(
+            reverse("ideas-detail", kwargs={"idea_id": self.idea.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_idea_post_preflight_allows_frontend_preview_origins(self):
         url = reverse("ideas-youtube-intent")
         origins = (
@@ -662,38 +683,9 @@ class IdeasAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data["error"]["code"], "validation_error")
 
-    @patch("ideas.views.research_youtube_intent_for_idea")
-    def test_research_youtube_intent(self, mock_research_youtube_intent_for_idea):
-        mock_research_youtube_intent_for_idea.return_value = {
-            "viewer_intent": "people want AI tools that save time and automate work",
-            "content_type": "listicle / tool recommendation",
-            "title_patterns": [
-                "Best [topic]",
-                "[topic] that save time",
-                "[topic] that replace work",
-            ],
-            "emotional_angles": [
-                "shock",
-                "fear of falling behind",
-                "productivity gain",
-            ],
-            "thumbnail_subjects": [
-                "creator comparing five automation results",
-                "five tool outputs arranged as result cards",
-                "repetitive task stack reduced to one workflow",
-            ],
-            "seo_keywords": [
-                "ai tools",
-                "ai productivity tools",
-                "best ai tools",
-                "ai assistant",
-                "automation tools",
-            ],
-            "search_suggestions": [
-                "ai tools for content creators",
-                "best ai tools for productivity",
-            ],
-        }
+    @patch("ideas.views.generate_youtube_intent_task.apply_async")
+    def test_research_youtube_intent_starts_background_job(self, mock_research_task):
+        mock_research_task.return_value = MagicMock(id="research-task-1")
         url = reverse("ideas-youtube-intent")
 
         response = self.client.post(
@@ -706,36 +698,20 @@ class IdeasAPITestCase(APITestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(
             response.data["message"],
-            "youtube intent research generated successfully",
+            "youtube intent research started",
         )
+        job = ContentPackageJob.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(job.job_type, ContentPackageJob.JobType.RESEARCH)
+        self.assertEqual(job.celery_task_id, "research-task-1")
         self.assertEqual(
-            response.data["data"]["viewer_intent"],
-            "people want AI tools that save time and automate work",
+            job.request_payload["idea"],
+            "5 AI tools that can replace your assistant",
         )
-        self.assertEqual(
-            response.data["data"]["thumbnail_subjects"],
-            [
-                "creator comparing five automation results",
-                "five tool outputs arranged as result cards",
-                "repetitive task stack reduced to one workflow",
-            ],
-        )
-        self.assertEqual(
-            response.data["data"]["search_suggestions"],
-            [
-                "ai tools for content creators",
-                "best ai tools for productivity",
-            ],
-        )
-        mock_research_youtube_intent_for_idea.assert_called_once_with(
-            idea="5 AI tools that can replace your assistant",
-            region_code="US",
-            language_code="en",
-            max_results=10,
-        )
+        self.assertEqual(job.request_payload["max_results"], 5)
+        mock_research_task.assert_called_once_with(args=[str(job.id)], retry=False)
 
     def test_research_youtube_intent_requires_valid_idea(self):
         url = reverse("ideas-youtube-intent")
@@ -1136,6 +1112,84 @@ class IdeasAPITestCase(APITestCase):
         )
         self.assertGreaterEqual(len(script["sections"]), 3)
         self.assertEqual(script["estimated_duration_minutes"], 8)
+
+    @patch("ideas.services.OpenAIImageClient")
+    @patch("ideas.services.TextGenerationClient")
+    def test_package_generation_does_not_request_or_return_script(
+        self,
+        mock_text_client_class,
+        mock_image_client_class,
+    ):
+        mock_text_client_class.return_value.generate_json.return_value = {
+            "thumbnail_prompt": "A creator dashboard with exact text SAVE HOURS",
+            "seo": {
+                "title": "5 AI Tools That Save Creators Time",
+                "description": "Find practical AI tools.",
+                "tags": ["ai tools"],
+                "hashtags": ["#AITools"],
+                "keywords": ["ai tools for creators"],
+            },
+            "edit_options": [
+                "Change thumbnail text",
+                "Use my face",
+                "Regenerate with stronger emotion",
+                "Replace background",
+            ],
+        }
+        mock_image_client_class.return_value.generate_thumbnail.return_value = {
+            "url": "https://example.com/thumbnail.png",
+            "public_id": "thumbnail-id",
+            "model": "gpt-image-2",
+            "size": "1536x1024",
+            "quality": "low",
+        }
+
+        result = generate_content_package(
+            idea="5 AI tools that can replace your assistant",
+            youtube_intent={
+                "viewer_intent": "Creators want tools that save time.",
+                "content_type": "Tool comparison",
+                "seo_keywords": ["ai tools for creators"],
+            },
+            selected_hook={
+                "id": "result",
+                "angle": "result",
+                "thumbnail_text": "SAVE HOURS",
+            },
+            subject_plan=[{"description": "Creator reviewing an automation dashboard"}],
+        )
+
+        self.assertNotIn("script", result)
+        system_prompt = mock_text_client_class.return_value.generate_json.call_args.kwargs[
+            "system_prompt"
+        ]
+        self.assertNotIn("script rules", system_prompt)
+
+    @patch("ideas.services.TextGenerationClient")
+    def test_script_generation_is_a_separate_llm_call(self, mock_text_client_class):
+        mock_text_client_class.return_value.generate_json.return_value = {
+            "format": "creator_talking_guide",
+            "audience_goal": "Choose useful AI tools.",
+            "core_message": "Automate measured workflow problems.",
+            "opening": {},
+            "sections": [],
+            "closing": {},
+            "delivery_notes": [],
+            "facts_to_verify": [],
+            "estimated_duration_minutes": 8,
+        }
+
+        result = generate_script_guide(
+            idea="5 AI tools that can replace your assistant",
+            youtube_intent={
+                "viewer_intent": "Creators want tools that save time.",
+                "content_type": "Tool comparison",
+            },
+            seo={"title": "5 AI Tools That Save Creators Time"},
+        )
+
+        self.assertEqual(result["format"], "creator_talking_guide")
+        self.assertEqual(result["core_message"], "Automate measured workflow problems.")
 
     def test_validate_generated_ideas_rejects_vague_titles(self):
         clusters = [

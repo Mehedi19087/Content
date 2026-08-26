@@ -60,6 +60,11 @@ class IdeaCandidate(models.Model):
 
 
 class ContentPackageJob(models.Model):
+    class JobType(models.TextChoices):
+        RESEARCH = "research", "Research"
+        PACKAGE = "package", "Thumbnail and SEO package"
+        SCRIPT = "script", "Script"
+
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         PROCESSING = "processing", "Processing"
@@ -67,6 +72,12 @@ class ContentPackageJob(models.Model):
         FAILED = "failed", "Failed"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    job_type = models.CharField(
+        max_length=20,
+        choices=JobType.choices,
+        default=JobType.PACKAGE,
+        db_index=True,
+    )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -93,4 +104,4 @@ class ContentPackageJob(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"Content package job {self.id} ({self.status})"
+        return f"Studio {self.job_type} job {self.id} ({self.status})"

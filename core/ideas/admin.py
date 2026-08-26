@@ -22,8 +22,16 @@ class IdeaCandidateAdmin(admin.ModelAdmin):
 
 @admin.register(ContentPackageJob)
 class ContentPackageJobAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "status", "stage", "created_at", "finished_at")
-    list_filter = ("status", "stage")
+    list_display = (
+        "id",
+        "job_type",
+        "user",
+        "status",
+        "stage",
+        "created_at",
+        "finished_at",
+    )
+    list_filter = ("job_type", "status", "stage")
     search_fields = ("id", "user__username", "user__email", "celery_task_id")
     readonly_fields = (
         "id",

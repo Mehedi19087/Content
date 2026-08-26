@@ -56,9 +56,9 @@ class YouTubeIntentResearchSerializer(serializers.Serializer):
     region_code = serializers.CharField(max_length=20, default="US", required=False)
     language_code = serializers.CharField(max_length=20, default="en", required=False)
     max_results = serializers.IntegerField(
-        default=10,
+        default=5,
         min_value=5,
-        max_value=20,
+        max_value=10,
         required=False,
     )
 
@@ -138,6 +138,27 @@ class GeneratePackageSerializer(serializers.Serializer):
         return value
 
 
+class GenerateScriptSerializer(serializers.Serializer):
+    idea = serializers.CharField(max_length=255)
+    youtube_intent = serializers.DictField()
+    seo = serializers.DictField(required=False, default=dict)
+
+    def validate_idea(self, value):
+        value = value.strip()
+        if len(value) < 5:
+            raise serializers.ValidationError("Idea must be at least 5 characters.")
+        return value
+
+    def validate_youtube_intent(self, value):
+        required_fields = ("viewer_intent", "content_type")
+        missing_fields = [field for field in required_fields if field not in value]
+        if missing_fields:
+            raise serializers.ValidationError(
+                f"Missing fields: {', '.join(missing_fields)}."
+            )
+        return value
+
+
 class ResponseIdeaCandidateSerializer(serializers.Serializer):
     id = serializers.IntegerField(read_only=True)
     category_id = serializers.IntegerField(read_only=True)
@@ -205,7 +226,6 @@ class ResponseThumbnailPreparationSerializer(serializers.Serializer):
 class ResponseGeneratePackageSerializer(serializers.Serializer):
     thumbnail = serializers.DictField(read_only=True)
     seo = serializers.DictField(read_only=True)
-    script = serializers.DictField(read_only=True)
     edit_options = serializers.ListField(
         child=serializers.CharField(),
         read_only=True,
@@ -214,9 +234,10 @@ class ResponseGeneratePackageSerializer(serializers.Serializer):
 
 class ResponseContentPackageJobSerializer(serializers.Serializer):
     id = serializers.UUIDField(read_only=True)
+    job_type = serializers.CharField(read_only=True)
     status = serializers.CharField(read_only=True)
     stage = serializers.CharField(read_only=True)
-    result = ResponseGeneratePackageSerializer(read_only=True, allow_null=True)
+    result = serializers.JSONField(read_only=True, allow_null=True)
     error_code = serializers.CharField(read_only=True, allow_blank=True)
     error_message = serializers.CharField(read_only=True, allow_blank=True)
     created_at = serializers.DateTimeField(read_only=True)
