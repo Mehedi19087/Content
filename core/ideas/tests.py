@@ -23,6 +23,7 @@ from .services import (
     generate_contextual_intent_analysis,
     generate_script_guide,
     normalize_script_guide,
+    normalize_thumbnail_hooks,
     refresh_all_ideas_for_cron,
     research_youtube_intent_for_idea,
     validate_generated_ideas,
@@ -204,6 +205,11 @@ class ContextualIntentAnalysisTestCase(APITestCase):
                 "content calendar filling itself with finished posts",
                 "stack of repetitive tasks reduced to one workflow",
             ],
+            "thumbnail_hooks": [
+                {"angle": "curiosity", "text": "Which Tool Actually Wins?"},
+                {"angle": "shock", "text": "Five Tools, One Winner"},
+                {"angle": "fear", "text": "Stop Wasting Workflow Time"},
+            ],
             "seo_keywords": [
                 "ai tools for creator workflows",
                 "creator automation tool comparison",
@@ -242,6 +248,14 @@ class ContextualIntentAnalysisTestCase(APITestCase):
             result["emotional_angles"][0],
             "relief from repetitive production work",
         )
+        self.assertEqual(
+            result["thumbnail_hooks"],
+            [
+                {"angle": "curiosity", "text": "Which Tool Actually Wins?"},
+                {"angle": "shock", "text": "Five Tools, One Winner"},
+                {"angle": "fear", "text": "Stop Wasting Workflow Time"},
+            ],
+        )
         payload = mock_text_client_class.return_value.generate_json.call_args.kwargs[
             "user_payload"
         ]
@@ -278,6 +292,35 @@ class ContextualIntentAnalysisTestCase(APITestCase):
         )
         self.assertIn("solar generator", result["seo_keywords"])
         self.assertEqual(result["emotional_angles"], [])
+        self.assertEqual(
+            result["thumbnail_hooks"][0],
+            {"angle": "curiosity", "text": "Inside Solar Generator"},
+        )
+
+    def test_invalid_or_duplicate_thumbnail_hooks_use_safe_fallbacks(self):
+        result = normalize_thumbnail_hooks(
+            [
+                {"angle": "curiosity", "text": "AI Tool Winner"},
+                {"angle": "curiosity", "text": "Duplicate Angle"},
+                {"angle": "shock", "text": "This Changed Everything"},
+                {"angle": "shock", "text": "Too many words for a readable thumbnail hook"},
+                {"angle": "unknown", "text": "Unknown Angle"},
+            ],
+            fallback=[
+                {"angle": "curiosity", "text": "Inside AI Tools"},
+                {"angle": "shock", "text": "The AI Tools Reality"},
+                {"angle": "fear", "text": "AI Tools Mistakes"},
+            ],
+        )
+
+        self.assertEqual(
+            result,
+            [
+                {"angle": "curiosity", "text": "AI Tool Winner"},
+                {"angle": "shock", "text": "The AI Tools Reality"},
+                {"angle": "fear", "text": "AI Tools Mistakes"},
+            ],
+        )
 
     def test_filters_unrelated_search_suggestions(self):
         result = filter_relevant_phrases(
@@ -924,6 +967,11 @@ class IdeasAPITestCase(APITestCase):
                         "five tool outputs arranged as result cards",
                         "repetitive task stack reduced to one workflow",
                     ],
+                    "thumbnail_hooks": [
+                        {"angle": "curiosity", "text": "Which Tool Saves Hours?"},
+                        {"angle": "shock", "text": "Five Tools, One Winner"},
+                        {"angle": "fear", "text": "Stop Wasting Creator Time"},
+                    ],
                     "seo_keywords": [
                         "ai tools",
                         "ai productivity tools",
@@ -943,6 +991,14 @@ class IdeasAPITestCase(APITestCase):
         self.assertIn(
             "shock",
             [card["angle"] for card in response.data["data"]["hook_cards"]],
+        )
+        self.assertEqual(
+            [card["thumbnail_text"] for card in response.data["data"]["hook_cards"]],
+            [
+                "Which Tool Saves Hours?",
+                "Five Tools, One Winner",
+                "Stop Wasting Creator Time",
+            ],
         )
         self.assertEqual(
             response.data["data"]["image_preparation"]["uses_google_search"],

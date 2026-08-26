@@ -27,6 +27,12 @@ from .youtube_suggest_client import YouTubeSuggestClient
 
 MAX_IDEAS_PER_REFRESH = 10
 MAX_INTENT_KEYWORDS = 6
+THUMBNAIL_HOOK_ANGLES = ("curiosity", "shock", "fear")
+BANNED_THUMBNAIL_HOOK_TEXTS = {
+    "don't miss this",
+    "nobody explains this",
+    "this changed everything",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -450,7 +456,7 @@ def generate_contextual_intent_analysis(
 You are a YouTube audience-research and packaging strategist. Analyze the exact video
 idea against only the supplied YouTube evidence. Return strict JSON with exactly these
 top-level keys: viewer_intent, content_type, title_patterns, emotional_angles,
-thumbnail_subjects, seo_keywords.
+thumbnail_subjects, thumbnail_hooks, seo_keywords.
 
 Grounding rules:
 - Treat the video idea as the primary topic and promise.
@@ -481,6 +487,11 @@ Field rules:
   layout instructions, or explanations.
 - Do not copy the subjects of evidence thumbnails; use evidence titles only to
   understand topic context.
+- thumbnail_hooks: exactly 3 objects with keys angle and text. Use each angle exactly
+  once: curiosity, shock, and fear. Each text must be 2 to 5 words, specific to the
+  video title and viewer intent, easy to read at thumbnail size, and meaningfully
+  different from the other two. Do not repeat the full title, use generic clickbait
+  such as "Nobody Explains This", or promise a fact/result unsupported by evidence.
 - seo_keywords: 4 to 6 natural search phrases tightly relevant to the exact idea.
   Prefer supported phrases from search suggestions, titles, and tags. Exclude
   unrelated phrases and generic standalone words such as idea, video, or tutorial.
@@ -554,6 +565,10 @@ Field rules:
             fallback["thumbnail_subjects"],
             limit=3,
         ),
+        "thumbnail_hooks": normalize_thumbnail_hooks(
+            generated.get("thumbnail_hooks"),
+            fallback=fallback["thumbnail_hooks"],
+        ),
         "seo_keywords": grounded_keywords or fallback["seo_keywords"],
     }
 
@@ -583,6 +598,9 @@ def build_contextual_intent_fallback(
         "title_patterns": patterns or [generalize_evidence_title(idea, idea)],
         "emotional_angles": [],
         "thumbnail_subjects": [idea.strip()],
+        "thumbnail_hooks": build_thumbnail_hook_fallbacks(
+            keywords[0] if keywords else idea
+        ),
         "seo_keywords": keywords or [query],
     }
 
@@ -596,6 +614,51 @@ def normalize_generated_list(value: Any, fallback: list[str], *, limit: int) -> 
     items = normalize_string_list(value)
     unique_items = list(dict.fromkeys(items))
     return (unique_items or fallback)[:limit]
+
+
+def normalize_thumbnail_hooks(
+    value: Any,
+    *,
+    fallback: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    hooks_by_angle: dict[str, dict[str, str]] = {}
+    used_text = set()
+
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            angle = str(item.get("angle", "")).strip().lower()
+            text = " ".join(str(item.get("text", "")).split()).strip()
+            word_count = len(text.split())
+            normalized_text = text.casefold()
+            if (
+                angle not in THUMBNAIL_HOOK_ANGLES
+                or angle in hooks_by_angle
+                or not 2 <= word_count <= 5
+                or len(text) > 40
+                or normalized_text in used_text
+                or normalized_text in BANNED_THUMBNAIL_HOOK_TEXTS
+            ):
+                continue
+            hooks_by_angle[angle] = {"angle": angle, "text": text}
+            used_text.add(normalized_text)
+
+    for hook in fallback:
+        angle = hook["angle"]
+        if angle not in hooks_by_angle:
+            hooks_by_angle[angle] = hook
+
+    return [hooks_by_angle[angle] for angle in THUMBNAIL_HOOK_ANGLES]
+
+
+def build_thumbnail_hook_fallbacks(topic_source: str) -> list[dict[str, str]]:
+    topic = extract_short_topic(topic_source).title()
+    return [
+        {"angle": "curiosity", "text": f"Inside {topic}"},
+        {"angle": "shock", "text": f"The {topic} Reality"},
+        {"angle": "fear", "text": f"{topic} Mistakes"},
+    ]
 
 
 def intent_topic_terms(idea: str) -> set[str]:
@@ -671,6 +734,12 @@ def prepare_thumbnail_from_intent(
     subjects = normalize_string_list(youtube_intent.get("thumbnail_subjects", []))
     emotional_angles = normalize_string_list(youtube_intent.get("emotional_angles", []))
     seo_keywords = normalize_string_list(youtube_intent.get("seo_keywords", []))
+    thumbnail_hooks = normalize_thumbnail_hooks(
+        youtube_intent.get("thumbnail_hooks"),
+        fallback=build_thumbnail_hook_fallbacks(
+            seo_keywords[0] if seo_keywords else idea
+        ),
+    )
     content_type = str(youtube_intent.get("content_type", "")).strip()
     viewer_intent = str(youtube_intent.get("viewer_intent", "")).strip()
 
@@ -684,6 +753,7 @@ def prepare_thumbnail_from_intent(
         viewer_intent=viewer_intent,
         emotional_angles=emotional_angles,
         seo_keywords=seo_keywords,
+        thumbnail_hooks=thumbnail_hooks,
     )
 
     return {
@@ -1385,8 +1455,14 @@ def build_thumbnail_hook_cards(
     viewer_intent: str,
     emotional_angles: list[str],
     seo_keywords: list[str],
+    thumbnail_hooks: list[dict[str, str]],
 ) -> list[dict[str, str]]:
     topic = seo_keywords[0] if seo_keywords else extract_short_topic(idea)
+    hook_text_by_angle = {
+        hook["angle"]: hook["text"]
+        for hook in thumbnail_hooks
+        if hook.get("angle") and hook.get("text")
+    }
     angle_order = choose_thumbnail_angle_order(
         content_type=content_type,
         emotional_angles=emotional_angles,
@@ -1403,6 +1479,7 @@ def build_thumbnail_hook_cards(
                     angle=angle,
                     topic=topic,
                     content_type=content_type,
+                    personalized_text=hook_text_by_angle.get(angle),
                 ),
                 "reason": build_thumbnail_hook_reason(
                     angle=angle,
@@ -1419,34 +1496,34 @@ def choose_thumbnail_angle_order(
     content_type: str,
     emotional_angles: list[str],
 ) -> list[str]:
-    normalized_angles = " ".join(emotional_angles).lower()
-    content_type_lower = content_type.lower()
-
-    if "warning" in content_type_lower or "fear" in normalized_angles:
-        preferred = ["fear", "shock", "curiosity"]
-    elif "tool recommendation" in content_type_lower or "productivity" in normalized_angles:
-        preferred = ["shock", "curiosity", "result"]
-    elif "tutorial" in content_type_lower:
-        preferred = ["curiosity", "result", "fear"]
-    else:
-        preferred = ["curiosity", "shock", "fear"]
-
-    return preferred
+    # Keep the comparison stable in the UI while personalizing the copy inside
+    # each strategy. The arguments remain part of the service contract for
+    # backward compatibility with existing callers.
+    return list(THUMBNAIL_HOOK_ANGLES)
 
 
-def build_thumbnail_text(*, angle: str, topic: str, content_type: str) -> str:
+def build_thumbnail_text(
+    *,
+    angle: str,
+    topic: str,
+    content_type: str,
+    personalized_text: str | None = None,
+) -> str:
+    if personalized_text:
+        return personalized_text
+
     topic_words = topic.split()[:2]
     short_topic = " ".join(topic_words).title() if topic_words else "This"
 
     if angle == "fear":
         if "warning" in content_type.lower():
-            return "Avoid This"
-        return "Don't Miss This"
+            return f"Avoid This {short_topic} Mistake"
+        return f"{short_topic} Mistakes"
     if angle == "shock":
-        return "This Changed Everything"
+        return f"The {short_topic} Reality"
     if angle == "result":
         return f"{short_topic} Works"
-    return "Nobody Explains This"
+    return f"Inside {short_topic}"
 
 
 def build_thumbnail_hook_reason(*, angle: str, viewer_intent: str) -> str:

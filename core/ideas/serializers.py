@@ -204,6 +204,10 @@ class ResponseYouTubeIntentResearchSerializer(serializers.Serializer):
         child=serializers.CharField(),
         read_only=True,
     )
+    thumbnail_hooks = serializers.ListField(
+        child=serializers.DictField(),
+        read_only=True,
+    )
     seo_keywords = serializers.ListField(
         child=serializers.CharField(),
         read_only=True,
