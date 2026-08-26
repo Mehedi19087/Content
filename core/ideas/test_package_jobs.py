@@ -180,7 +180,14 @@ class ContentPackageJobAPITestCase(APITestCase):
             request_payload=research_request_payload(),
             status=ContentPackageJob.Status.SUCCEEDED,
             stage="completed",
-            result={"viewer_intent": "Creators want to save time."},
+            result={
+                "viewer_intent": "Creators want to save time.",
+                "thumbnail_hooks": [
+                    {"angle": "curiosity", "text": "Which Tool Saves Hours?"},
+                    {"angle": "shock", "text": "Five Tools, One Winner"},
+                    {"angle": "fear", "text": "Stop Wasting Creator Time"},
+                ],
+            },
             finished_at=timezone.now(),
         )
 
@@ -194,6 +201,33 @@ class ContentPackageJobAPITestCase(APITestCase):
         self.assertEqual(response.data["data"]["id"], str(cached.id))
         self.assertEqual(response.data["data"]["status"], "succeeded")
         mock_delay.assert_not_called()
+
+    @patch("ideas.views.generate_youtube_intent_task.apply_async")
+    def test_research_replaces_cached_result_without_personalized_hooks(
+        self,
+        mock_delay,
+    ):
+        mock_delay.return_value.id = "new-research-task-id"
+        cached = ContentPackageJob.objects.create(
+            user=self.user,
+            job_type=ContentPackageJob.JobType.RESEARCH,
+            request_payload=research_request_payload(),
+            status=ContentPackageJob.Status.SUCCEEDED,
+            stage="completed",
+            result={"viewer_intent": "Creators want to save time."},
+            finished_at=timezone.now(),
+        )
+
+        response = self.client.post(
+            reverse("ideas-youtube-intent"),
+            research_request_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertNotEqual(response.data["data"]["id"], str(cached.id))
+        self.assertEqual(response.data["data"]["status"], "pending")
+        mock_delay.assert_called_once()
 
     @patch("ideas.views.generate_content_script_task.apply_async")
     def test_start_script_returns_background_job(self, mock_delay):

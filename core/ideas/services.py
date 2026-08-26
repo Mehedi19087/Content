@@ -925,7 +925,7 @@ def create_or_reuse_research_job(*, user, request_payload: dict[str, Any]):
         .order_by("-finished_at")
         .first()
     )
-    if cached_job:
+    if cached_job and research_result_has_personalized_hooks(cached_job.result):
         return cached_job, False
 
     return (
@@ -936,6 +936,20 @@ def create_or_reuse_research_job(*, user, request_payload: dict[str, Any]):
         ),
         True,
     )
+
+
+def research_result_has_personalized_hooks(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    hooks = result.get("thumbnail_hooks")
+    if not isinstance(hooks, list):
+        return False
+    angles = {
+        str(hook.get("angle", "")).strip().lower()
+        for hook in hooks
+        if isinstance(hook, dict) and str(hook.get("text", "")).strip()
+    }
+    return angles == set(THUMBNAIL_HOOK_ANGLES)
 
 
 def create_script_job(*, user, request_payload: dict[str, Any]):
