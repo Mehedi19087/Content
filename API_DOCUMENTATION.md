@@ -34,13 +34,14 @@ A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. 
 | 14 | `POST` | `internal/ideas/refresh/` | Refresh every active category sequentially (Cron secret) |
 | 15 | `POST` | `ideas/youtube-intent/` | Research YouTube intent (Authenticated) |
 | 16 | `POST` | `ideas/thumbnail-preparation/` | Prepare thumbnail hooks (Authenticated) |
-| 17 | `POST` | `ideas/generate-package/` | Generate final content package (Authenticated) |
-| 18 | `GET` | `billing/plans/` | List purchasable plans (Authenticated) |
-| 19 | `POST` | `billing/checkout/` | Get Lemon Squeezy hosted checkout URL (Authenticated) |
-| 20 | `GET` | `billing/status/` | Get current user's subscription status (Authenticated) |
-| 21 | `POST` | `billing/portal/` | Get Lemon Squeezy customer portal URL (Authenticated) |
-| 22 | `POST` | `billing/cancel/` | Cancel subscription at period end (Authenticated) |
-| 23 | `POST` | `billing/webhook/` | Lemon Squeezy webhook receiver (Public) |
+| 17 | `POST` | `ideas/generate-package/` | Start content-package generation (Authenticated) |
+| 18 | `GET` | `ideas/generation-jobs/<id>/` | Get package-generation status (Authenticated) |
+| 19 | `GET` | `billing/plans/` | List purchasable plans (Authenticated) |
+| 20 | `POST` | `billing/checkout/` | Get Lemon Squeezy hosted checkout URL (Authenticated) |
+| 21 | `GET` | `billing/status/` | Get current user's subscription status (Authenticated) |
+| 22 | `POST` | `billing/portal/` | Get Lemon Squeezy customer portal URL (Authenticated) |
+| 23 | `POST` | `billing/cancel/` | Cancel subscription at period end (Authenticated) |
+| 24 | `POST` | `billing/webhook/` | Lemon Squeezy webhook receiver (Public) |
 
 ---
 
@@ -443,10 +444,10 @@ Research YouTube search intent for a specific video idea. Analyzes YouTube searc
 {
   "message": "youtube intent research generated successfully",
   "data": {
-    "viewer_intent": "people want the best ai agent options and practical reasons to use them",
-    "content_type": "listicle / tool recommendation",
-    "title_patterns": ["Best [topic]", "Top [number] [topic]", "I tested [topic]"],
-    "emotional_angles": ["shock", "curiosity gap", "productivity gain"],
+    "viewer_intent": "Creators want proof of which AI agents can complete real workflow steps before choosing one.",
+    "content_type": "hands-on creator workflow comparison",
+    "title_patterns": ["I Tested [number] [topic] for [workflow]", "[topic]: Which One Actually [result]?", "[number] [topic] Ranked by [constraint]"],
+    "emotional_angles": ["skepticism about exaggerated automation claims", "relief from repetitive creator work", "confidence in choosing one practical agent"],
     "thumbnail_subjects": ["creator comparing five agent workflow results", "research task transforming into a finished video brief", "five distinct automation result cards"],
     "seo_keywords": ["ai agents", "chatgpt", "automation", "creator tools", "productivity"]
   }
@@ -457,12 +458,12 @@ Research YouTube search intent for a specific video idea. Analyzes YouTube searc
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `viewer_intent` | string | What viewers are looking for |
-| `content_type` | string | Detected content type (e.g., tutorial, listicle, comparison) |
-| `title_patterns` | string[] | Effective title patterns for this idea |
-| `emotional_angles` | string[] | Emotional angles for thumbnails |
+| `viewer_intent` | string | Title-specific outcome, question, or tension supported by relevant evidence |
+| `content_type` | string | Precise format inferred for this exact title and evidence |
+| `title_patterns` | string[] | Evidence-grounded reusable structures for this idea |
+| `emotional_angles` | string[] | Title-specific viewer motivations or tensions |
 | `thumbnail_subjects` | string[] | Title-specific visual subjects generated from the idea and research |
-| `seo_keywords` | string[] | Extracted SEO keywords |
+| `seo_keywords` | string[] | Relevant search phrases grounded in the title, suggestions, titles, and tags |
 
 **Error (400):**
 
@@ -574,7 +575,8 @@ The `youtube_intent` object must contain these fields:
 
 ## 10. POST `ideas/generate-package/`
 
-Generate the final content package including a DALL-E thumbnail, SEO metadata, and edit options.
+Start background generation of the final content package, including an OpenAI
+thumbnail, SEO metadata, script, and edit options.
 
 **Request:**
 
@@ -619,12 +621,43 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
 }
 ```
 
-**Response (201):**
+**Response (202):**
 
 ```json
 {
-  "message": "content package generated successfully",
+  "message": "content package generation started",
   "data": {
+    "id": "2ec63e12-8e34-4f65-b9b7-c6d7e7017780",
+    "status": "pending",
+    "stage": "queued",
+    "result": null,
+    "error_code": "",
+    "error_message": "",
+    "created_at": "2026-08-25T10:00:00Z",
+    "started_at": null,
+    "finished_at": null
+  }
+}
+```
+
+The frontend should poll `GET ideas/generation-jobs/{id}/` until the status is
+`succeeded` or `failed`.
+
+## 10.1 GET `ideas/generation-jobs/{id}/`
+
+Return the current state of a content-package generation job. Users can only
+retrieve their own jobs.
+
+**Completed response (200):**
+
+```json
+{
+  "message": "content package generation status retrieved successfully",
+  "data": {
+    "id": "2ec63e12-8e34-4f65-b9b7-c6d7e7017780",
+    "status": "succeeded",
+    "stage": "completed",
+    "result": {
     "thumbnail": {
       "url": "https://res.cloudinary.com/example/image/upload/v1/creatorintent/generated_thumbnails/example.png",
       "public_id": "creatorintent/generated_thumbnails/example",
@@ -672,6 +705,12 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
       "Regenerate with stronger emotion",
       "Replace background"
     ]
+    },
+    "error_code": "",
+    "error_message": "",
+    "created_at": "2026-08-25T10:00:00Z",
+    "started_at": "2026-08-25T10:00:01Z",
+    "finished_at": "2026-08-25T10:01:20Z"
   }
 }
 ```
@@ -687,6 +726,8 @@ Generate the final content package including a DALL-E thumbnail, SEO metadata, a
 | Groq | Backup text generation provider | `groq_client.py` |
 | OpenAI Image API | Generate thumbnail images | `openai_image_client.py` |
 | Cloudinary | Persist generated thumbnails and serve HTTPS URLs | `openai_image_client.py` |
+| Redis | Celery message broker | Celery configuration |
+| Celery | Execute package generation outside HTTP requests | `ideas/tasks.py` |
 | Lemon Squeezy | Subscription billing, customer portal, webhooks | `billing/client.py` |
 
 DeepSeek text generation requires `DEEPSEEK_API_KEY`. `DEEPSEEK_MODEL` defaults
@@ -700,6 +741,15 @@ HTTP 429 rate limits are retried once using Groq's requested wait time.
 
 Cloudinary thumbnail storage requires `CLOUDINARY_CLOUD_NAME`,
 `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` in the backend environment.
+`CLOUDINARY_TIMEOUT_SECONDS` defaults to `60`.
+
+Background generation requires `CELERY_BROKER_URL`, normally a managed Redis
+URL. The web and worker processes must use the same value. Optional worker limits
+are `CELERY_TASK_SOFT_TIME_LIMIT` (default `420`) and
+`CELERY_TASK_TIME_LIMIT` (default `450`). PostgreSQL stores job status and final
+results; Redis is not used as permanent result storage. Jobs still pending or
+processing after `CONTENT_PACKAGE_JOB_STALE_SECONDS` (default `600`) are marked
+failed when their status is retrieved.
 
 ---
 
@@ -712,7 +762,8 @@ The typical API usage follows this sequence:
 3. **Get Trending Ideas** - users call `GET ideas/trending/` (read-only)
 4. **Research Intent** - `POST ideas/youtube-intent/` (analyze a specific idea)
 5. **Prepare Thumbnail** - `POST ideas/thumbnail-preparation/` (generate hook cards and subject plans)
-6. **Generate Package** - `POST ideas/generate-package/` (create a Cloudinary-hosted thumbnail + SEO + script + edit options)
+6. **Start Package Generation** - `POST ideas/generate-package/` (returns `202` and a job id)
+7. **Poll Package Status** - `GET ideas/generation-jobs/{id}/` until `succeeded` or `failed`
 
 ---
 
