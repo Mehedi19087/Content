@@ -125,6 +125,11 @@ class CreatorImageUploadSerializer(serializers.Serializer):
             raise serializers.ValidationError("The uploaded file is not a valid image.")
         return value
 
+
+class ChannelLogoUploadSerializer(CreatorImageUploadSerializer):
+    pass
+
+
 class GeneratePackageSerializer(serializers.Serializer):
     idea = serializers.CharField(max_length=255)
     youtube_intent = serializers.DictField()
@@ -134,6 +139,7 @@ class GeneratePackageSerializer(serializers.Serializer):
         allow_empty=False,
     )
     creator_image_choice = serializers.DictField(required=False, default=dict)
+    channel_logo_choice = serializers.DictField(required=False, default=dict)
 
     def validate_idea(self, value):
         value = value.strip()
@@ -257,6 +263,11 @@ class ResponseThumbnailPreparationSerializer(serializers.Serializer):
 
 
 class ResponseCreatorImageUploadSerializer(serializers.Serializer):
+    url = serializers.URLField(read_only=True)
+    asset_token = serializers.CharField(read_only=True)
+
+
+class ResponseChannelLogoUploadSerializer(serializers.Serializer):
     url = serializers.URLField(read_only=True)
     asset_token = serializers.CharField(read_only=True)
 

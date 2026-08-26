@@ -8,12 +8,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .serializers import (
+    ChannelLogoUploadSerializer,
     CronRefreshIdeasSerializer,
     CronRefreshSummarySerializer,
     CreatorImageUploadSerializer,
     GeneratePackageSerializer,
     GenerateScriptSerializer,
     ResponseContentPackageJobSerializer,
+    ResponseChannelLogoUploadSerializer,
     ResponseCreatorImageUploadSerializer,
     ResponseIdeaCandidateSerializer,
     ResponseThumbnailPreparationSerializer,
@@ -34,6 +36,7 @@ from .services import (
     prepare_thumbnail_from_intent,
     refresh_all_ideas_for_cron,
     verify_idea_cron_secret,
+    upload_channel_logo,
     upload_creator_image,
 )
 from .tasks import (
@@ -280,6 +283,27 @@ class CreatorImageUploadAPIView(APIView):
         return Response(
             {
                 "message": "creator image uploaded successfully",
+                "data": response_serializer.data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ChannelLogoUploadAPIView(APIView):
+    permission_classes = [HasCreatorPermission]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        serializer = ChannelLogoUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        asset = upload_channel_logo(
+            user=request.user,
+            image_file=serializer.validated_data["image"],
+        )
+        response_serializer = ResponseChannelLogoUploadSerializer(asset)
+        return Response(
+            {
+                "message": "channel logo uploaded successfully",
                 "data": response_serializer.data,
             },
             status=status.HTTP_201_CREATED,

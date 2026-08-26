@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    ChannelLogoUploadAPIView,
     ContentPackageJobDetailAPIView,
     CronRefreshIdeasAPIView,
     CreatorImageUploadAPIView,
@@ -36,6 +37,11 @@ urlpatterns = [
         "ideas/creator-image/",
         CreatorImageUploadAPIView.as_view(),
         name="ideas-creator-image-upload",
+    ),
+    path(
+        "ideas/channel-logo/",
+        ChannelLogoUploadAPIView.as_view(),
+        name="ideas-channel-logo-upload",
     ),
     path(
         "ideas/generate-package/",

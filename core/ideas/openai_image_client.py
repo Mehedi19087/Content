@@ -57,15 +57,21 @@ class OpenAIImageClient:
         prompt: str,
         filename_prefix: str = "thumbnail",
         reference_image_url: str = "",
+        logo_reference_image_url: str = "",
     ) -> dict[str, str]:
-        operation = "edit_image" if reference_image_url else "generate_image"
+        reference_images = [
+            ("creator", reference_image_url),
+            ("channel-logo", logo_reference_image_url),
+        ]
+        reference_images = [item for item in reference_images if item[1]]
+        operation = "edit_image" if reference_images else "generate_image"
         started_at = time.perf_counter()
         outcome = "failed"
         try:
-            if reference_image_url:
+            if reference_images:
                 data = self._edit_thumbnail(
                     prompt=prompt,
-                    reference_image_url=reference_image_url,
+                    reference_images=reference_images,
                 )
             else:
                 data = self._generate_thumbnail(prompt=prompt)
@@ -137,32 +143,24 @@ class OpenAIImageClient:
         self,
         *,
         prompt: str,
-        reference_image_url: str,
+        reference_images: list[tuple[str, str]],
     ) -> dict[str, Any]:
-        try:
-            reference_response = requests.get(
-                reference_image_url,
-                timeout=30,
+        files = []
+        for reference_name, reference_url in reference_images:
+            image_bytes, content_type, extension = self._download_reference_image(
+                reference_name=reference_name,
+                reference_url=reference_url,
             )
-            reference_response.raise_for_status()
-        except requests.RequestException as exc:
-            raise ValidationError(
-                {"creator_image": "Failed to load the uploaded creator image."}
-            ) from exc
-
-        image_bytes = reference_response.content
-        if not image_bytes or len(image_bytes) > MAX_REFERENCE_IMAGE_BYTES:
-            raise ValidationError(
-                {"creator_image": "Uploaded creator image is empty or larger than 5 MB."}
+            files.append(
+                (
+                    "image[]",
+                    (
+                        f"{reference_name}-reference.{extension}",
+                        image_bytes,
+                        content_type,
+                    ),
+                )
             )
-        content_type = reference_response.headers.get("Content-Type", "image/jpeg")
-        content_type = content_type.split(";", 1)[0].strip().lower()
-        if content_type not in {"image/jpeg", "image/png", "image/webp"}:
-            raise ValidationError({"creator_image": "Unsupported creator image format."})
-
-        extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[
-            content_type
-        ]
         try:
             response = requests.post(
                 OPENAI_IMAGE_EDITS_URL,
@@ -175,13 +173,7 @@ class OpenAIImageClient:
                     "n": "1",
                     "output_format": settings.OPENAI_IMAGE_OUTPUT_FORMAT,
                 },
-                files={
-                    "image[]": (
-                        f"creator-reference.{extension}",
-                        image_bytes,
-                        content_type,
-                    )
-                },
+                files=files,
                 timeout=settings.OPENAI_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
@@ -191,11 +183,45 @@ class OpenAIImageClient:
             raise ValidationError(
                 {
                     "openai_image_api": (
-                        "Failed to generate thumbnail from the creator image. "
+                        "Failed to generate thumbnail from the reference images. "
                         f"{response_text}"
                     ).strip()
                 }
             ) from exc
+
+    def _download_reference_image(
+        self,
+        *,
+        reference_name: str,
+        reference_url: str,
+    ) -> tuple[bytes, str, str]:
+        field_name = "channel_logo" if reference_name == "channel-logo" else "creator_image"
+        display_name = "channel logo" if reference_name == "channel-logo" else "creator image"
+        try:
+            reference_response = requests.get(reference_url, timeout=30)
+            reference_response.raise_for_status()
+        except requests.RequestException as exc:
+            raise ValidationError(
+                {field_name: f"Failed to load the uploaded {display_name}."}
+            ) from exc
+
+        image_bytes = reference_response.content
+        if not image_bytes or len(image_bytes) > MAX_REFERENCE_IMAGE_BYTES:
+            raise ValidationError(
+                {field_name: f"Uploaded {display_name} is empty or larger than 5 MB."}
+            )
+        content_type = reference_response.headers.get("Content-Type", "image/jpeg")
+        content_type = content_type.split(";", 1)[0].strip().lower()
+        extensions = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+        }
+        if content_type not in extensions:
+            raise ValidationError(
+                {field_name: f"Unsupported {display_name} format."}
+            )
+        return image_bytes, content_type, extensions[content_type]
 
     def _upload_image(
         self,
@@ -289,5 +315,30 @@ def upload_creator_reference_image(*, image_file, user_id: int) -> dict[str, str
     if not secure_url or not uploaded_public_id:
         raise ValidationError(
             {"creator_image": "Cloudinary returned incomplete creator image data."}
+        )
+    return {"url": secure_url, "public_id": uploaded_public_id}
+
+
+def upload_channel_logo_reference_image(*, image_file, user_id: int) -> dict[str, str]:
+    configure_cloudinary()
+    public_id = f"creatorintent/channel_logos/{user_id}/{uuid.uuid4().hex}"
+    try:
+        upload_result = cloudinary.uploader.upload(
+            image_file,
+            public_id=public_id,
+            resource_type="image",
+            overwrite=False,
+            timeout=settings.CLOUDINARY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        raise ValidationError(
+            {"channel_logo": f"Failed to upload channel logo: {exc}"}
+        ) from exc
+
+    secure_url = str(upload_result.get("secure_url", "")).strip()
+    uploaded_public_id = str(upload_result.get("public_id", "")).strip()
+    if not secure_url or not uploaded_public_id:
+        raise ValidationError(
+            {"channel_logo": "Cloudinary returned incomplete channel logo data."}
         )
     return {"url": secure_url, "public_id": uploaded_public_id}

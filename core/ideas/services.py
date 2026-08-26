@@ -21,7 +21,11 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from categories.models import Category
 from .llm_client import TextGenerationClient
 from .models import ContentPackageJob, IdeaCandidate
-from .openai_image_client import OpenAIImageClient, upload_creator_reference_image
+from .openai_image_client import (
+    OpenAIImageClient,
+    upload_channel_logo_reference_image,
+    upload_creator_reference_image,
+)
 from .youtube_client import YouTubeClient
 from .youtube_suggest_client import YouTubeSuggestClient
 
@@ -31,6 +35,8 @@ MAX_INTENT_KEYWORDS = 6
 THUMBNAIL_HOOK_ANGLES = ("curiosity", "shock", "fear")
 CREATOR_IMAGE_TOKEN_SALT = "ideas.creator-image"
 CREATOR_IMAGE_TOKEN_MAX_AGE_SECONDS = 60 * 60
+CHANNEL_LOGO_TOKEN_SALT = "ideas.channel-logo"
+CHANNEL_LOGO_TOKEN_MAX_AGE_SECONDS = 60 * 60
 BANNED_THUMBNAIL_HOOK_TEXTS = {
     "don't miss this",
     "nobody explains this",
@@ -877,28 +883,49 @@ def generate_content_package(
     selected_hook: dict[str, Any],
     subject_plan: list[dict[str, Any]],
     creator_image_choice: dict[str, Any] | None = None,
+    channel_logo_choice: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     creator_image_choice = creator_image_choice or {}
+    channel_logo_choice = channel_logo_choice or {}
     package_plan = generate_package_plan_with_llm(
         idea=idea,
         youtube_intent=youtube_intent,
         selected_hook=selected_hook,
         subject_plan=subject_plan,
         creator_image_choice=creator_image_choice,
+        channel_logo_choice=channel_logo_choice,
     )
     thumbnail_prompt = package_plan["thumbnail_prompt"]
     creator_image_url = str(creator_image_choice.get("image_url", "")).strip()
+    channel_logo_url = str(channel_logo_choice.get("image_url", "")).strip()
+    reference_number = 1
     if creator_image_url:
         thumbnail_prompt = (
-            "Use the uploaded creator photo as the identity reference. Preserve the "
+            f"Image {reference_number} is the uploaded creator photo. Use it as the "
+            "identity reference. Preserve the "
             "creator's recognizable facial identity while adapting pose, expression, "
             "lighting, clothing, and background to the thumbnail composition. "
             f"{thumbnail_prompt}"
+        )
+        reference_number += 1
+    if channel_logo_url:
+        thumbnail_prompt = (
+            f"{thumbnail_prompt}\n\nProtected channel logo reference:\n"
+            f"Image {reference_number} is the uploaded channel logo. Place this logo "
+            "exactly once in the safest uncluttered area based on the complete thumbnail "
+            "composition. Preserve its original shape, proportions, colors, symbols, "
+            "lettering, spelling, and transparency as faithfully as possible. Do not "
+            "redesign, simplify, crop, stretch, rotate, recolor, or duplicate it. Keep "
+            "it small but clearly recognizable, with comfortable edge padding, and do "
+            "not cover the headline, face, eyes, hands, main subject, or core emotion. "
+            "This uploaded channel logo is the only exception to the general no-logo "
+            "constraint. Do not add any other logo or trademark."
         )
     thumbnail_asset = OpenAIImageClient().generate_thumbnail(
         prompt=thumbnail_prompt,
         filename_prefix=slugify_phrase(idea),
         reference_image_url=creator_image_url,
+        logo_reference_image_url=channel_logo_url,
     )
 
     return {
@@ -911,6 +938,7 @@ def generate_content_package(
             "selected_hook": selected_hook,
             "prompt": thumbnail_prompt,
             "used_subjects": subject_plan,
+            "used_channel_logo": bool(channel_logo_url),
         },
         "seo": package_plan["seo"],
         "edit_options": package_plan["edit_options"],
@@ -922,6 +950,10 @@ def create_content_package_job(*, user, request_payload: dict[str, Any]):
     request_payload["creator_image_choice"] = resolve_creator_image_choice(
         user=user,
         creator_image_choice=request_payload.get("creator_image_choice", {}),
+    )
+    request_payload["channel_logo_choice"] = resolve_channel_logo_choice(
+        user=user,
+        channel_logo_choice=request_payload.get("channel_logo_choice", {}),
     )
     return ContentPackageJob.objects.create(
         user=user,
@@ -942,6 +974,23 @@ def upload_creator_image(*, user, image_file) -> dict[str, str]:
             "public_id": asset["public_id"],
         },
         salt=CREATOR_IMAGE_TOKEN_SALT,
+        compress=True,
+    )
+    return {"url": asset["url"], "asset_token": asset_token}
+
+
+def upload_channel_logo(*, user, image_file) -> dict[str, str]:
+    asset = upload_channel_logo_reference_image(
+        image_file=image_file,
+        user_id=user.id,
+    )
+    asset_token = signing.dumps(
+        {
+            "user_id": user.id,
+            "url": asset["url"],
+            "public_id": asset["public_id"],
+        },
+        salt=CHANNEL_LOGO_TOKEN_SALT,
         compress=True,
     )
     return {"url": asset["url"], "asset_token": asset_token}
@@ -990,6 +1039,54 @@ def resolve_creator_image_choice(
         )
     return {
         "skip_creator_image": False,
+        "image_url": image_url,
+        "public_id": public_id,
+    }
+
+
+def resolve_channel_logo_choice(
+    *,
+    user,
+    channel_logo_choice: dict[str, Any],
+) -> dict[str, Any]:
+    if not channel_logo_choice or channel_logo_choice.get("skip_channel_logo"):
+        return {"skip_channel_logo": True}
+
+    asset_token = str(channel_logo_choice.get("asset_token", "")).strip()
+    if not asset_token:
+        raise ValidationError(
+            {"channel_logo_choice": "Upload a channel logo before generating."}
+        )
+    try:
+        asset = signing.loads(
+            asset_token,
+            salt=CHANNEL_LOGO_TOKEN_SALT,
+            max_age=CHANNEL_LOGO_TOKEN_MAX_AGE_SECONDS,
+        )
+    except signing.SignatureExpired as exc:
+        raise ValidationError(
+            {"channel_logo_choice": "Channel logo upload expired. Upload it again."}
+        ) from exc
+    except signing.BadSignature as exc:
+        raise ValidationError(
+            {"channel_logo_choice": "Channel logo upload is invalid."}
+        ) from exc
+
+    if asset.get("user_id") != user.id:
+        raise ValidationError(
+            {"channel_logo_choice": "Channel logo upload is invalid."}
+        )
+    image_url = str(asset.get("url", "")).strip()
+    public_id = str(asset.get("public_id", "")).strip()
+    expected_prefix = f"creatorintent/channel_logos/{user.id}/"
+    if not image_url.startswith("https://res.cloudinary.com/") or not public_id.startswith(
+        expected_prefix
+    ):
+        raise ValidationError(
+            {"channel_logo_choice": "Channel logo upload is invalid."}
+        )
+    return {
+        "skip_channel_logo": False,
         "image_url": image_url,
         "public_id": public_id,
     }
@@ -1194,6 +1291,7 @@ def generate_package_plan_with_llm(
     selected_hook: dict[str, Any],
     subject_plan: list[dict[str, Any]],
     creator_image_choice: dict[str, Any],
+    channel_logo_choice: dict[str, Any],
 ) -> dict[str, Any]:
     system_prompt = """
 You are a senior YouTube content strategist. Create one cohesive content package that
@@ -1241,6 +1339,7 @@ edit_options must be 4 short strings.
         "selected_hook": selected_hook,
         "subject_plan": subject_plan,
         "creator_image_choice": creator_image_choice,
+        "channel_logo_choice": channel_logo_choice,
         "output_requirements": {
             "thumbnail_size": "16:9",
             "thumbnail_text": selected_hook.get("thumbnail_text", ""),

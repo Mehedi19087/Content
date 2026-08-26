@@ -28,6 +28,7 @@ from .services import (
     normalize_thumbnail_hooks,
     refresh_all_ideas_for_cron,
     research_youtube_intent_for_idea,
+    upload_channel_logo,
     upload_creator_image,
     validate_generated_ideas,
 )
@@ -671,6 +672,67 @@ class IdeasAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @patch("ideas.views.upload_channel_logo")
+    def test_upload_channel_logo_from_local_file(self, mock_upload_channel_logo):
+        mock_upload_channel_logo.return_value = {
+            "url": "https://res.cloudinary.com/demo/image/upload/channel-logo.png",
+            "asset_token": "signed-channel-logo-token",
+        }
+        image = SimpleUploadedFile(
+            "channel-logo.png",
+            b"\x89PNG\r\n\x1a\nchannel-logo-bytes",
+            content_type="image/png",
+        )
+
+        response = self.client.post(
+            reverse("ideas-channel-logo-upload"),
+            {"image": image},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            response.data["data"]["asset_token"],
+            "signed-channel-logo-token",
+        )
+        mock_upload_channel_logo.assert_called_once()
+
+    @patch("ideas.services.upload_channel_logo_reference_image")
+    def test_uploaded_channel_logo_token_is_bound_to_user(self, mock_upload):
+        mock_upload.return_value = {
+            "url": "https://res.cloudinary.com/demo/image/upload/channel-logo.png",
+            "public_id": f"creatorintent/channel_logos/{self.user.id}/asset-1",
+        }
+        asset = upload_channel_logo(
+            user=self.user,
+            image_file=SimpleUploadedFile(
+                "channel-logo.png",
+                b"\x89PNG\r\n\x1a\nchannel-logo-bytes",
+                content_type="image/png",
+            ),
+        )
+        payload = {
+            "idea": "5 AI tools that can replace your assistant",
+            "channel_logo_choice": {
+                "skip_channel_logo": False,
+                "asset_token": asset["asset_token"],
+            },
+        }
+
+        job = create_content_package_job(user=self.user, request_payload=payload)
+
+        self.assertEqual(
+            job.request_payload["channel_logo_choice"]["image_url"],
+            mock_upload.return_value["url"],
+        )
+        self.assertNotIn("asset_token", job.request_payload["channel_logo_choice"])
+        other_user = User.objects.create_user(
+            username="other-logo-owner",
+            password="secret123",
+        )
+        with self.assertRaises(ValidationError):
+            create_content_package_job(user=other_user, request_payload=payload)
+
     @patch("ideas.services.upload_creator_reference_image")
     def test_uploaded_creator_image_token_is_bound_to_user(self, mock_upload):
         mock_upload.return_value = {
@@ -1056,8 +1118,54 @@ class IdeasAPITestCase(APITestCase):
 
         self.assertEqual(result["url"], "https://example.com/result.png")
         self.assertEqual(mock_post.call_args.args[0], "https://api.openai.com/v1/images/edits")
-        self.assertIn("image[]", mock_post.call_args.kwargs["files"])
+        files = mock_post.call_args.kwargs["files"]
+        self.assertEqual(files[0][0], "image[]")
+        self.assertEqual(files[0][1][0], "creator-reference.jpg")
         self.assertNotIn("input_fidelity", mock_post.call_args.kwargs["data"])
+
+    @override_settings(
+        CLOUDINARY_CLOUD_NAME="demo-cloud",
+        CLOUDINARY_API_KEY="cloudinary-key",
+        CLOUDINARY_API_SECRET="cloudinary-secret",
+        OPENAI_IMAGE_MODEL="gpt-image-2",
+        OPENAI_IMAGE_SIZE="1536x1024",
+        OPENAI_IMAGE_QUALITY="low",
+        OPENAI_IMAGE_OUTPUT_FORMAT="png",
+        OPENAI_TIMEOUT_SECONDS=120,
+    )
+    @patch("ideas.openai_image_client.requests.get")
+    @patch("ideas.openai_image_client.requests.post")
+    @patch.object(OpenAIImageClient, "_upload_image")
+    def test_creator_and_logo_use_indexed_openai_image_references(
+        self,
+        mock_upload_image,
+        mock_post,
+        mock_get,
+    ):
+        creator_response = MagicMock()
+        creator_response.content = b"creator-image-bytes"
+        creator_response.headers = {"Content-Type": "image/jpeg"}
+        logo_response = MagicMock()
+        logo_response.content = b"channel-logo-bytes"
+        logo_response.headers = {"Content-Type": "image/png"}
+        mock_get.side_effect = [creator_response, logo_response]
+        edit_response = MagicMock()
+        edit_response.json.return_value = {
+            "data": [{"b64_json": "Z2VuZXJhdGVkLWltYWdl"}]
+        }
+        mock_post.return_value = edit_response
+        mock_upload_image.return_value = {"url": "https://example.com/result.png"}
+
+        OpenAIImageClient(api_key="openai-key").generate_thumbnail(
+            prompt="Image 1 is the creator. Image 2 is the channel logo.",
+            reference_image_url="https://res.cloudinary.com/demo/creator.jpg",
+            logo_reference_image_url="https://res.cloudinary.com/demo/logo.png",
+        )
+
+        files = mock_post.call_args.kwargs["files"]
+        self.assertEqual([file[0] for file in files], ["image[]", "image[]"])
+        self.assertEqual(files[0][1][0], "creator-reference.jpg")
+        self.assertEqual(files[1][1][0], "channel-logo-reference.png")
 
     @override_settings(
         CLOUDINARY_CLOUD_NAME="",
@@ -1347,6 +1455,12 @@ class IdeasAPITestCase(APITestCase):
                     "https://res.cloudinary.com/demo/image/upload/creator.jpg"
                 ),
             },
+            channel_logo_choice={
+                "skip_channel_logo": False,
+                "image_url": (
+                    "https://res.cloudinary.com/demo/image/upload/channel-logo.png"
+                ),
+            },
         )
 
         self.assertNotIn("script", result)
@@ -1366,6 +1480,18 @@ class IdeasAPITestCase(APITestCase):
         self.assertIn("Production direction:", image_call.kwargs["prompt"])
         self.assertIn("controlled two-to-three-color palette", image_call.kwargs["prompt"])
         self.assertIn("original visual design only", image_call.kwargs["prompt"])
+        self.assertIn("Image 1 is the uploaded creator photo", image_call.kwargs["prompt"])
+        self.assertIn("Image 2 is the uploaded channel logo", image_call.kwargs["prompt"])
+        self.assertIn("do not cover the headline", image_call.kwargs["prompt"])
+        self.assertIn(
+            "only exception to the general no-logo constraint",
+            image_call.kwargs["prompt"],
+        )
+        self.assertEqual(
+            image_call.kwargs["logo_reference_image_url"],
+            "https://res.cloudinary.com/demo/image/upload/channel-logo.png",
+        )
+        self.assertTrue(result["thumbnail"]["used_channel_logo"])
 
     @patch("ideas.services.TextGenerationClient")
     def test_script_generation_is_a_separate_llm_call(self, mock_text_client_class):
