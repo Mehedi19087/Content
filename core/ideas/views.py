@@ -3,15 +3,18 @@ import time
 
 from rest_framework import permissions, status
 from rest_framework.exceptions import ValidationError
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .serializers import (
     CronRefreshIdeasSerializer,
     CronRefreshSummarySerializer,
+    CreatorImageUploadSerializer,
     GeneratePackageSerializer,
     GenerateScriptSerializer,
     ResponseContentPackageJobSerializer,
+    ResponseCreatorImageUploadSerializer,
     ResponseIdeaCandidateSerializer,
     ResponseThumbnailPreparationSerializer,
     ThumbnailPreparationSerializer,
@@ -31,6 +34,7 @@ from .services import (
     prepare_thumbnail_from_intent,
     refresh_all_ideas_for_cron,
     verify_idea_cron_secret,
+    upload_creator_image,
 )
 from .tasks import (
     generate_content_package_task,
@@ -259,6 +263,27 @@ class ThumbnailPreparationAPIView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+class CreatorImageUploadAPIView(APIView):
+    permission_classes = [HasCreatorPermission]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        serializer = CreatorImageUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        asset = upload_creator_image(
+            user=request.user,
+            image_file=serializer.validated_data["image"],
+        )
+        response_serializer = ResponseCreatorImageUploadSerializer(asset)
+        return Response(
+            {
+                "message": "creator image uploaded successfully",
+                "data": response_serializer.data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class GeneratePackageAPIView(APIView):

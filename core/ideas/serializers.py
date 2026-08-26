@@ -1,6 +1,14 @@
 from rest_framework import serializers
 
 
+MAX_CREATOR_IMAGE_BYTES = 5 * 1024 * 1024
+CREATOR_IMAGE_SIGNATURES = {
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/webp": (b"RIFF",),
+}
+
+
 class TrendingIdeaQuerySerializer(serializers.Serializer):
     category_slug = serializers.SlugField(max_length=120, required=False)
     region_code = serializers.CharField(max_length=20, required=False)
@@ -95,6 +103,27 @@ class ThumbnailPreparationSerializer(serializers.Serializer):
             )
         return value
 
+
+class CreatorImageUploadSerializer(serializers.Serializer):
+    image = serializers.FileField(allow_empty_file=False)
+
+    def validate_image(self, value):
+        if value.size > MAX_CREATOR_IMAGE_BYTES:
+            raise serializers.ValidationError("Image must be 5 MB or smaller.")
+
+        content_type = str(getattr(value, "content_type", "")).lower()
+        signatures = CREATOR_IMAGE_SIGNATURES.get(content_type)
+        if not signatures:
+            raise serializers.ValidationError("Use a JPG, PNG, or WebP image.")
+
+        header = value.read(12)
+        value.seek(0)
+        valid_signature = any(header.startswith(signature) for signature in signatures)
+        if content_type == "image/webp":
+            valid_signature = valid_signature and header[8:12] == b"WEBP"
+        if not valid_signature:
+            raise serializers.ValidationError("The uploaded file is not a valid image.")
+        return value
 
 class GeneratePackageSerializer(serializers.Serializer):
     idea = serializers.CharField(max_length=255)
@@ -225,6 +254,11 @@ class ResponseThumbnailPreparationSerializer(serializers.Serializer):
     )
     image_preparation = serializers.DictField(read_only=True)
     creator_image = serializers.DictField(read_only=True)
+
+
+class ResponseCreatorImageUploadSerializer(serializers.Serializer):
+    url = serializers.URLField(read_only=True)
+    asset_token = serializers.CharField(read_only=True)
 
 
 class ResponseGeneratePackageSerializer(serializers.Serializer):

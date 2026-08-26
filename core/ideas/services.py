@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
+from django.core import signing
 from django.db import transaction
 from django.db.models import QuerySet
 from django.utils import timezone
@@ -20,7 +21,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from categories.models import Category
 from .llm_client import TextGenerationClient
 from .models import ContentPackageJob, IdeaCandidate
-from .openai_image_client import OpenAIImageClient
+from .openai_image_client import OpenAIImageClient, upload_creator_reference_image
 from .youtube_client import YouTubeClient
 from .youtube_suggest_client import YouTubeSuggestClient
 
@@ -28,6 +29,8 @@ from .youtube_suggest_client import YouTubeSuggestClient
 MAX_IDEAS_PER_REFRESH = 10
 MAX_INTENT_KEYWORDS = 6
 THUMBNAIL_HOOK_ANGLES = ("curiosity", "shock", "fear")
+CREATOR_IMAGE_TOKEN_SALT = "ideas.creator-image"
+CREATOR_IMAGE_TOKEN_MAX_AGE_SECONDS = 60 * 60
 BANNED_THUMBNAIL_HOOK_TEXTS = {
     "don't miss this",
     "nobody explains this",
@@ -865,9 +868,18 @@ def generate_content_package(
         creator_image_choice=creator_image_choice,
     )
     thumbnail_prompt = package_plan["thumbnail_prompt"]
+    creator_image_url = str(creator_image_choice.get("image_url", "")).strip()
+    if creator_image_url:
+        thumbnail_prompt = (
+            "Use the uploaded creator photo as the identity reference. Preserve the "
+            "creator's recognizable facial identity while adapting pose, expression, "
+            "lighting, clothing, and background to the thumbnail composition. "
+            f"{thumbnail_prompt}"
+        )
     thumbnail_asset = OpenAIImageClient().generate_thumbnail(
         prompt=thumbnail_prompt,
         filename_prefix=slugify_phrase(idea),
+        reference_image_url=creator_image_url,
     )
 
     return {
@@ -887,11 +899,81 @@ def generate_content_package(
 
 
 def create_content_package_job(*, user, request_payload: dict[str, Any]):
+    request_payload = dict(request_payload)
+    request_payload["creator_image_choice"] = resolve_creator_image_choice(
+        user=user,
+        creator_image_choice=request_payload.get("creator_image_choice", {}),
+    )
     return ContentPackageJob.objects.create(
         user=user,
         job_type=ContentPackageJob.JobType.PACKAGE,
         request_payload=request_payload,
     )
+
+
+def upload_creator_image(*, user, image_file) -> dict[str, str]:
+    asset = upload_creator_reference_image(
+        image_file=image_file,
+        user_id=user.id,
+    )
+    asset_token = signing.dumps(
+        {
+            "user_id": user.id,
+            "url": asset["url"],
+            "public_id": asset["public_id"],
+        },
+        salt=CREATOR_IMAGE_TOKEN_SALT,
+        compress=True,
+    )
+    return {"url": asset["url"], "asset_token": asset_token}
+
+
+def resolve_creator_image_choice(
+    *,
+    user,
+    creator_image_choice: dict[str, Any],
+) -> dict[str, Any]:
+    if not creator_image_choice or creator_image_choice.get("skip_creator_image"):
+        return {"skip_creator_image": True}
+
+    asset_token = str(creator_image_choice.get("asset_token", "")).strip()
+    if not asset_token:
+        raise ValidationError(
+            {"creator_image_choice": "Upload a creator image before generating."}
+        )
+    try:
+        asset = signing.loads(
+            asset_token,
+            salt=CREATOR_IMAGE_TOKEN_SALT,
+            max_age=CREATOR_IMAGE_TOKEN_MAX_AGE_SECONDS,
+        )
+    except signing.SignatureExpired as exc:
+        raise ValidationError(
+            {"creator_image_choice": "Creator image upload expired. Upload it again."}
+        ) from exc
+    except signing.BadSignature as exc:
+        raise ValidationError(
+            {"creator_image_choice": "Creator image upload is invalid."}
+        ) from exc
+
+    if asset.get("user_id") != user.id:
+        raise ValidationError(
+            {"creator_image_choice": "Creator image upload is invalid."}
+        )
+    image_url = str(asset.get("url", "")).strip()
+    public_id = str(asset.get("public_id", "")).strip()
+    expected_prefix = f"creatorintent/creator_images/{user.id}/"
+    if not image_url.startswith("https://res.cloudinary.com/") or not public_id.startswith(
+        expected_prefix
+    ):
+        raise ValidationError(
+            {"creator_image_choice": "Creator image upload is invalid."}
+        )
+    return {
+        "skip_creator_image": False,
+        "image_url": image_url,
+        "public_id": public_id,
+    }
 
 
 def create_or_reuse_research_job(*, user, request_payload: dict[str, Any]):

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.urls import reverse
 from rest_framework.exceptions import ValidationError
@@ -18,6 +19,7 @@ from .llm_client import TextGenerationClient
 from .models import ContentPackageJob, IdeaCandidate
 from .openai_image_client import OpenAIImageClient
 from .services import (
+    create_content_package_job,
     filter_relevant_phrases,
     generate_content_package,
     generate_contextual_intent_analysis,
@@ -26,6 +28,7 @@ from .services import (
     normalize_thumbnail_hooks,
     refresh_all_ideas_for_cron,
     research_youtube_intent_for_idea,
+    upload_creator_image,
     validate_generated_ideas,
 )
 from .youtube_suggest_client import YouTubeSuggestClient
@@ -628,6 +631,88 @@ class IdeasAPITestCase(APITestCase):
             risk_flags=[],
         )
 
+    @patch("ideas.views.upload_creator_image")
+    def test_upload_creator_image_from_local_file(self, mock_upload_creator_image):
+        mock_upload_creator_image.return_value = {
+            "url": "https://res.cloudinary.com/demo/image/upload/creator.jpg",
+            "asset_token": "signed-creator-image-token",
+        }
+        image = SimpleUploadedFile(
+            "creator.jpg",
+            b"\xff\xd8\xff\xe0creator-image-bytes",
+            content_type="image/jpeg",
+        )
+
+        response = self.client.post(
+            reverse("ideas-creator-image-upload"),
+            {"image": image},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            response.data["data"]["asset_token"],
+            "signed-creator-image-token",
+        )
+        mock_upload_creator_image.assert_called_once()
+
+    def test_creator_image_upload_rejects_non_image_file(self):
+        invalid_file = SimpleUploadedFile(
+            "creator.txt",
+            b"not-an-image",
+            content_type="text/plain",
+        )
+
+        response = self.client.post(
+            reverse("ideas-creator-image-upload"),
+            {"image": invalid_file},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch("ideas.services.upload_creator_reference_image")
+    def test_uploaded_creator_image_token_is_bound_to_user(self, mock_upload):
+        mock_upload.return_value = {
+            "url": "https://res.cloudinary.com/demo/image/upload/creator.jpg",
+            "public_id": f"creatorintent/creator_images/{self.user.id}/asset-1",
+        }
+        asset = upload_creator_image(
+            user=self.user,
+            image_file=SimpleUploadedFile(
+                "creator.jpg",
+                b"\xff\xd8\xff\xe0creator-image-bytes",
+                content_type="image/jpeg",
+            ),
+        )
+        payload = {
+            "idea": "5 AI tools that can replace your assistant",
+            "creator_image_choice": {
+                "skip_creator_image": False,
+                "asset_token": asset["asset_token"],
+            },
+        }
+
+        job = create_content_package_job(user=self.user, request_payload=payload)
+
+        self.assertEqual(
+            job.request_payload["creator_image_choice"]["image_url"],
+            mock_upload.return_value["url"],
+        )
+        self.assertNotIn(
+            "asset_token",
+            job.request_payload["creator_image_choice"],
+        )
+        other_user = User.objects.create_user(
+            username="other-creator",
+            password="secret123",
+        )
+        with self.assertRaises(ValidationError):
+            create_content_package_job(
+                user=other_user,
+                request_payload=payload,
+            )
+
     def test_list_trending_ideas(self):
         url = reverse("ideas-trending")
         response = self.client.get(
@@ -932,6 +1017,49 @@ class IdeasAPITestCase(APITestCase):
         )
 
     @override_settings(
+        CLOUDINARY_CLOUD_NAME="demo-cloud",
+        CLOUDINARY_API_KEY="cloudinary-key",
+        CLOUDINARY_API_SECRET="cloudinary-secret",
+        OPENAI_IMAGE_MODEL="gpt-image-2",
+        OPENAI_IMAGE_SIZE="1536x1024",
+        OPENAI_IMAGE_QUALITY="low",
+        OPENAI_IMAGE_OUTPUT_FORMAT="png",
+        OPENAI_TIMEOUT_SECONDS=120,
+    )
+    @patch("ideas.openai_image_client.requests.get")
+    @patch("ideas.openai_image_client.requests.post")
+    @patch.object(OpenAIImageClient, "_upload_image")
+    def test_creator_reference_uses_openai_image_edit(
+        self,
+        mock_upload_image,
+        mock_post,
+        mock_get,
+    ):
+        reference_response = MagicMock()
+        reference_response.content = b"creator-image-bytes"
+        reference_response.headers = {"Content-Type": "image/jpeg"}
+        mock_get.return_value = reference_response
+        edit_response = MagicMock()
+        edit_response.json.return_value = {
+            "data": [{"b64_json": "Z2VuZXJhdGVkLWltYWdl"}]
+        }
+        mock_post.return_value = edit_response
+        mock_upload_image.return_value = {"url": "https://example.com/result.png"}
+        client = OpenAIImageClient(api_key="openai-key")
+
+        result = client.generate_thumbnail(
+            prompt="Preserve the creator identity.",
+            reference_image_url=(
+                "https://res.cloudinary.com/demo/image/upload/creator.jpg"
+            ),
+        )
+
+        self.assertEqual(result["url"], "https://example.com/result.png")
+        self.assertEqual(mock_post.call_args.args[0], "https://api.openai.com/v1/images/edits")
+        self.assertIn("image[]", mock_post.call_args.kwargs["files"])
+        self.assertNotIn("input_fidelity", mock_post.call_args.kwargs["data"])
+
+    @override_settings(
         CLOUDINARY_CLOUD_NAME="",
         CLOUDINARY_API_KEY="",
         CLOUDINARY_API_SECRET="",
@@ -1213,6 +1341,12 @@ class IdeasAPITestCase(APITestCase):
                 "thumbnail_text": "SAVE HOURS",
             },
             subject_plan=[{"description": "Creator reviewing an automation dashboard"}],
+            creator_image_choice={
+                "skip_creator_image": False,
+                "image_url": (
+                    "https://res.cloudinary.com/demo/image/upload/creator.jpg"
+                ),
+            },
         )
 
         self.assertNotIn("script", result)
@@ -1220,6 +1354,12 @@ class IdeasAPITestCase(APITestCase):
             "system_prompt"
         ]
         self.assertNotIn("script rules", system_prompt)
+        image_call = mock_image_client_class.return_value.generate_thumbnail.call_args
+        self.assertEqual(
+            image_call.kwargs["reference_image_url"],
+            "https://res.cloudinary.com/demo/image/upload/creator.jpg",
+        )
+        self.assertIn("Preserve the creator's recognizable facial identity", image_call.kwargs["prompt"])
 
     @patch("ideas.services.TextGenerationClient")
     def test_script_generation_is_a_separate_llm_call(self, mock_text_client_class):

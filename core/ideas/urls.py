@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     ContentPackageJobDetailAPIView,
     CronRefreshIdeasAPIView,
+    CreatorImageUploadAPIView,
     GeneratePackageAPIView,
     GenerateScriptAPIView,
     IdeaDetailAPIView,
@@ -30,6 +31,11 @@ urlpatterns = [
         "ideas/thumbnail-preparation/",
         ThumbnailPreparationAPIView.as_view(),
         name="ideas-thumbnail-preparation",
+    ),
+    path(
+        "ideas/creator-image/",
+        CreatorImageUploadAPIView.as_view(),
+        name="ideas-creator-image-upload",
     ),
     path(
         "ideas/generate-package/",
