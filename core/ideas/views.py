@@ -10,7 +10,6 @@ from rest_framework.views import APIView
 from .serializers import (
     ChannelLogoUploadSerializer,
     CronRefreshIdeasSerializer,
-    CronRefreshSummarySerializer,
     CreatorImageUploadSerializer,
     GeneratePackageSerializer,
     GenerateScriptSerializer,
@@ -34,7 +33,6 @@ from .services import (
     mark_content_package_job_dispatched,
     mark_content_package_job_queue_failed,
     prepare_thumbnail_from_intent,
-    refresh_all_ideas_for_cron,
     verify_idea_cron_secret,
     upload_channel_logo,
     upload_creator_image,
@@ -43,6 +41,7 @@ from .tasks import (
     generate_content_package_task,
     generate_content_script_task,
     generate_youtube_intent_task,
+    refresh_all_ideas_task,
 )
 from users.permissions import (
     HasCreatorPermission,
@@ -107,32 +106,27 @@ class CronRefreshIdeasAPIView(APIView):
         serializer.is_valid(raise_exception=True)
 
         try:
-            summary = refresh_all_ideas_for_cron(**serializer.validated_data)
-        except ValidationError:
-            raise
+            task = refresh_all_ideas_task.apply_async(
+                kwargs=serializer.validated_data,
+                retry=False,
+            )
         except Exception:
-            logger.exception("ideas.cron.unexpected_failure")
+            logger.exception("ideas.cron.dispatch_failed")
             return Response(
-                {"message": "Scheduled idea refresh failed unexpectedly."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {"message": "Idea refresh could not be scheduled."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        response_serializer = CronRefreshSummarySerializer(summary)
-        response_status = (
-            status.HTTP_200_OK
-            if summary["failed"] == 0
-            else status.HTTP_503_SERVICE_UNAVAILABLE
-        )
         return Response(
             {
-                "message": (
-                    "scheduled idea refresh completed successfully"
-                    if summary["failed"] == 0
-                    else "scheduled idea refresh completed with failures"
-                ),
-                "data": response_serializer.data,
+                "message": "scheduled idea refresh started",
+                "data": {
+                    "region_code": serializer.validated_data["region_code"],
+                    "limit": serializer.validated_data["limit"],
+                    "task_id": task.id,
+                },
             },
-            status=response_status,
+            status=status.HTTP_202_ACCEPTED,
         )
 
 

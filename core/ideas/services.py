@@ -14,7 +14,7 @@ from typing import Any
 from django.conf import settings
 from django.core import signing
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
@@ -130,10 +130,16 @@ def get_active_ideas(
     if category_slug:
         filters["category"] = get_active_category_by_slug(category_slug)
 
-    return IdeaCandidate.objects.filter(**filters).order_by(
-        "-trend_score",
-        "-generated_at",
-    )[:limit]
+    return (
+        IdeaCandidate.objects.filter(**filters)
+        .filter(
+            Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()),
+        )
+        .order_by(
+            "-trend_score",
+            "-generated_at",
+        )[:limit]
+    )
 
 
 def get_active_idea(*, idea_id: int) -> IdeaCandidate:
@@ -211,15 +217,14 @@ def refresh_all_ideas_for_cron(
             {"region_code": f"No active categories are enabled for {region_code}."}
         )
 
-    results = []
-    for category in categories:
-        results.append(
-            _refresh_category_with_retry(
-                category=category,
-                region_code=region_code,
-                limit=limit,
-            )
+    results = [
+        _refresh_category_with_retry(
+            category=category,
+            region_code=region_code,
+            limit=limit,
         )
+        for category in categories
+    ]
 
     succeeded = sum(result["status"] == "succeeded" for result in results)
     return {
@@ -2108,17 +2113,36 @@ def cluster_videos(
 
 
 def get_cluster_key(video: dict[str, Any]) -> str:
-    if video["matched_keywords"]:
-        return slugify_phrase(video["matched_keywords"][0])
-
-    words = [
+    matched_keywords = video.get("matched_keywords", [])
+    title_terms = [
         word
         for word in re.findall(r"[a-zA-Z0-9]+", video["title"].lower())
         if word not in STOP_WORDS and len(word) > 2
     ]
-    if not words:
+
+    if matched_keywords:
+        primary = slugify_phrase(matched_keywords[0])
+        distinguishing = _first_distinct_title_term(
+            title_terms,
+            exclude=set(matched_keywords),
+        )
+        if distinguishing:
+            return f"{primary}-{distinguishing}"
+        return primary
+
+    if not title_terms:
         return "general-trend"
-    return slugify_phrase(" ".join(words[:3]))
+    return slugify_phrase(" ".join(title_terms[:3]))
+
+
+def _first_distinct_title_term(title_terms: list[str], *, exclude: set[str]) -> str | None:
+    for term in title_terms:
+        normalized = term.replace("-", " ")
+        if normalized in exclude:
+            continue
+        if term not in ("guide", "review", "tutorial", "best", "top", "new", "video"):
+            return term
+    return None
 
 
 def generate_ideas_with_llm(
@@ -2404,19 +2428,45 @@ def looks_like_creator_video_idea(title: str) -> bool:
     title_lower = title.lower()
     creator_markers = (
         "i tested",
+        "i tried",
         "tested",
+        "tried",
         "how ",
+        "how to",
         "what happened",
+        "what happens",
+        "what i",
         "vs",
+        "versus",
         "tools",
+        "tool",
         "workflow",
         "workflows",
         "checklist",
         "guide",
         "tutorial",
         "mistakes",
+        "mistake",
         "for creators",
         "small creators",
+        "for your",
+        "for youtube",
+        "review",
+        "walkthrough",
+        "set up",
+        "setup",
+        "beginner",
+        "challenge",
+        "behind the scenes",
+        "day in the life",
+        "i spent",
+        "i built",
+        "i made",
+        "i bought",
+        "i lived",
+        "using",
+        "actually",
+        "real creators",
     )
     has_number = bool(re.search(r"\d+", title))
     has_marker = any(marker in title_lower for marker in creator_markers)

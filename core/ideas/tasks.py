@@ -3,10 +3,12 @@ import logging
 from celery import shared_task
 
 from .services import (
+    MAX_IDEAS_PER_REFRESH,
     generate_content_package,
     generate_script_guide,
     mark_content_package_job_failed,
     mark_content_package_job_succeeded,
+    refresh_all_ideas_for_cron,
     research_youtube_intent_for_idea,
     start_content_package_job,
 )
@@ -14,6 +16,18 @@ from .models import ContentPackageJob
 
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(name="ideas.refresh_all_ideas", ignore_result=True)
+def refresh_all_ideas_task(*, region_code: str = "US", limit: int = MAX_IDEAS_PER_REFRESH):
+    summary = refresh_all_ideas_for_cron(region_code=region_code, limit=limit)
+    logger.info(
+        "ideas.refresh_all.completed region=%s total=%s succeeded=%s failed=%s",
+        region_code,
+        summary["total_categories"],
+        summary["succeeded"],
+        summary["failed"],
+    )
 
 
 @shared_task(name="ideas.generate_content_package", ignore_result=True)

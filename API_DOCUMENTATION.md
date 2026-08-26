@@ -31,7 +31,7 @@ A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. 
 | 11 | `DELETE` | `categories/<id>/` | Delete category (Authenticated) |
 | 12 | `GET` | `ideas/` | Get global or category-filtered trending ideas (Authenticated) |
 | 13 | `GET` | `ideas/trending/` | Backward-compatible trending ideas URL (Authenticated) |
-| 14 | `POST` | `internal/ideas/refresh/` | Refresh every active category sequentially (Cron secret) |
+| 14 | `POST` | `internal/ideas/refresh/` | Enqueue a background refresh of every active category (Cron secret) |
 | 15 | `POST` | `ideas/youtube-intent/` | Research YouTube intent (Authenticated) |
 | 16 | `POST` | `ideas/thumbnail-preparation/` | Prepare thumbnail hooks (Authenticated) |
 | 17 | `POST` | `ideas/generate-package/` | Start content-package generation (Authenticated) |
@@ -351,10 +351,13 @@ category. `ideas/trending/` remains available as an alias.
 
 ## 7. POST `internal/ideas/refresh/`
 
-Internal scheduled endpoint. It refreshes every active category enabled for the
-requested region, one category at a time. DeepSeek is attempted first and Groq
-is the fallback. Transient failures receive bounded retries; permanent failures
-do not block later categories. Existing ideas remain active for any failed category.
+Internal scheduled endpoint. It validates the cron secret and enqueues a Celery
+background job that refreshes every active category enabled for the requested
+region. The HTTP request returns immediately so short-lived external cron
+services never time out; the worker runs the refresh outside the request cycle.
+DeepSeek is attempted first and Groq is the fallback. Transient failures receive
+bounded retries; permanent failures do not block later categories. Existing ideas
+remain active for any failed category.
 
 **Authentication header:**
 
@@ -378,31 +381,24 @@ X-Cron-Secret: <IDEA_CRON_SECRET>
 
 An empty JSON object (`{}`) uses the defaults.
 
-**Response (200):**
+**Response (202):**
 
 ```json
 {
-  "message": "scheduled idea refresh completed successfully",
+  "message": "scheduled idea refresh started",
   "data": {
     "region_code": "US",
-    "total_categories": 12,
-    "succeeded": 12,
-    "failed": 0,
-    "results": [
-      {
-        "category_slug": "ai-automation",
-        "status": "succeeded",
-        "attempts": 1,
-        "ideas_created": 10,
-        "error": ""
-      }
-    ]
+    "limit": 10,
+    "task_id": "5e05eb9f-0e6a-4a2b-8f0d-1f1c1c1c1c1c"
   }
 }
 ```
 
-The endpoint returns `503` with the same summary when one or more categories
-exhaust their retries, allowing cron monitoring to detect partial failure.
+The endpoint returns `503` when the message broker is unreachable and the
+background job could not be scheduled.
+
+The Celery task `ideas.refresh_all_ideas` executes the refresh. It requires a
+running worker with the same `CELERY_BROKER_URL` as the web service.
 
 Required environment variables and retry defaults:
 
@@ -411,7 +407,7 @@ IDEA_CRON_SECRET=<long-random-secret>
 IDEA_CRON_MAX_ATTEMPTS=3
 IDEA_CRON_RETRY_BASE_SECONDS=5
 IDEA_CRON_RETRY_MAX_SECONDS=30
-IDEA_EXPIRY_HOURS=26
+IDEA_EXPIRY_HOURS=80
 ```
 
 ---
@@ -758,7 +754,7 @@ failed when their status is retrieved.
 The typical API usage follows this sequence:
 
 1. **Create Category** - `POST categories/`
-2. **Scheduled Refresh** - cron calls `POST internal/ideas/refresh/` once daily
+2. **Scheduled Refresh** - cron calls `POST internal/ideas/refresh/` every 2-3 days
 3. **Get Trending Ideas** - users call `GET ideas/trending/` (read-only)
 4. **Research Intent** - `POST ideas/youtube-intent/` (analyze a specific idea)
 5. **Prepare Thumbnail** - `POST ideas/thumbnail-preparation/` (generate hook cards and subject plans)

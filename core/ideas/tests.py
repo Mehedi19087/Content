@@ -24,6 +24,7 @@ from .services import (
     generate_content_package,
     generate_contextual_intent_analysis,
     generate_script_guide,
+    get_active_ideas,
     normalize_script_guide,
     normalize_thumbnail_hooks,
     refresh_all_ideas_for_cron,
@@ -494,6 +495,41 @@ class IdeaCronServiceTestCase(APITestCase):
             [2, 3],
         )
 
+    def test_get_active_ideas_excludes_expired_ideas(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        IdeaCandidate.objects.create(
+            category=self.first_category,
+            region_code="US",
+            title="Still fresh idea",
+            why_now="Evidence",
+            audience_promise="Promise",
+            suggested_format="Tutorial",
+            is_active=True,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        IdeaCandidate.objects.create(
+            category=self.first_category,
+            region_code="US",
+            title="Expired idea",
+            why_now="Evidence",
+            audience_promise="Promise",
+            suggested_format="Tutorial",
+            is_active=True,
+            expires_at=timezone.now() - timedelta(hours=1),
+        )
+
+        ideas = get_active_ideas(
+            category_slug="first-category",
+            region_code="US",
+            limit=10,
+        )
+
+        self.assertEqual(ideas.count(), 1)
+        self.assertEqual(ideas[0].title, "Still fresh idea")
+
 
 class IdeaCronRefreshAPITestCase(APITestCase):
     @override_settings(IDEA_CRON_SECRET="cron-secret")
@@ -525,30 +561,12 @@ class IdeaCronRefreshAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
 
     @override_settings(IDEA_CRON_SECRET="cron-secret")
-    @patch("ideas.views.refresh_all_ideas_for_cron")
-    def test_cron_endpoint_refreshes_all_categories(self, mock_refresh_all):
-        mock_refresh_all.return_value = {
-            "region_code": "US",
-            "total_categories": 2,
-            "succeeded": 2,
-            "failed": 0,
-            "results": [
-                {
-                    "category_slug": "first-category",
-                    "status": "succeeded",
-                    "attempts": 1,
-                    "ideas_created": 10,
-                    "error": "",
-                },
-                {
-                    "category_slug": "second-category",
-                    "status": "succeeded",
-                    "attempts": 2,
-                    "ideas_created": 10,
-                    "error": "",
-                },
-            ],
-        }
+    @patch("ideas.views.refresh_all_ideas_task")
+    def test_cron_endpoint_enqueues_refresh_and_returns_accepted(
+        self,
+        mock_task,
+    ):
+        mock_task.apply_async.return_value = MagicMock(id="task-123")
 
         response = self.client.post(
             reverse("ideas-cron-refresh"),
@@ -557,31 +575,23 @@ class IdeaCronRefreshAPITestCase(APITestCase):
             HTTP_X_CRON_SECRET="cron-secret",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["data"]["succeeded"], 2)
-        mock_refresh_all.assert_called_once_with(region_code="US", limit=10)
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(response.data["message"], "scheduled idea refresh started")
+        self.assertEqual(response.data["data"]["region_code"], "US")
+        self.assertEqual(response.data["data"]["limit"], 10)
+        self.assertEqual(response.data["data"]["task_id"], "task-123")
+        mock_task.apply_async.assert_called_once_with(
+            kwargs={"region_code": "US", "limit": 10},
+            retry=False,
+        )
 
     @override_settings(IDEA_CRON_SECRET="cron-secret")
-    @patch("ideas.views.refresh_all_ideas_for_cron")
-    def test_cron_endpoint_returns_failure_status_for_partial_result(
+    @patch("ideas.views.refresh_all_ideas_task")
+    def test_cron_endpoint_returns_service_unavailable_when_queue_is_down(
         self,
-        mock_refresh_all,
+        mock_task,
     ):
-        mock_refresh_all.return_value = {
-            "region_code": "US",
-            "total_categories": 1,
-            "succeeded": 0,
-            "failed": 1,
-            "results": [
-                {
-                    "category_slug": "failed-category",
-                    "status": "failed",
-                    "attempts": 3,
-                    "ideas_created": 0,
-                    "error": "Provider unavailable",
-                }
-            ],
-        }
+        mock_task.apply_async.side_effect = Exception("broker unreachable")
 
         response = self.client.post(
             reverse("ideas-cron-refresh"),
@@ -591,7 +601,6 @@ class IdeaCronRefreshAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertEqual(response.data["data"]["failed"], 1)
 
 
 class IdeasAPITestCase(APITestCase):
