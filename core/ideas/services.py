@@ -36,6 +36,25 @@ BANNED_THUMBNAIL_HOOK_TEXTS = {
     "nobody explains this",
     "this changed everything",
 }
+THUMBNAIL_RENDERING_BRIEF = """
+Intended use: a premium YouTube thumbnail that remains instantly understandable at
+320x180 pixels.
+Composition: use one dominant focal subject, no more than two supporting visual
+elements, clear foreground/midground/background separation, and intentional negative
+space for the headline. Use an asymmetric rule-of-thirds or diagonal composition when
+it strengthens the idea; do not make a flat collage.
+Art direction: choose a specific visual language that fits this video's topic and
+audience. Use a controlled two-to-three-color palette, strong subject/background
+separation, realistic depth, and purposeful lighting. Tell the story through the
+subject, action, and contrast instead of generic decoration. Avoid defaulting to neon
+AI graphics, random dashboards, arrows, circles, flames, or shocked faces unless the
+video idea genuinely requires them.
+Typography: render the requested headline exactly once, with clean bold sans-serif
+lettering, correct spelling, strong contrast, and no overlap with the focal subject.
+Constraints: original visual design only; do not copy an existing thumbnail, creator,
+artwork, or platform image. No extra text, logos, trademarks, watermarks, borders, or
+unrelated objects.
+""".strip()
 logger = logging.getLogger(__name__)
 
 
@@ -1184,7 +1203,19 @@ edit_options.
 
 thumbnail_prompt rules:
 - Target a 16:9 YouTube thumbnail.
-- Use photorealistic subjects and high contrast lighting.
+- Write thumbnail_prompt as a concise production creative brief in this order:
+  scene and concept, focal subject and action, composition, lighting and color,
+  typography, then exclusions.
+- Make every visual choice specific to this video's topic, audience, viewer intent,
+  and selected hook. Avoid a reusable generic thumbnail concept.
+- Use one dominant focal subject and no more than two supporting visual elements.
+- Create depth with a distinct foreground, midground, and background instead of a
+  flat collage.
+- Choose a deliberate topic-appropriate visual language; do not default every topic
+  to neon AI graphics, dashboards, arrows, circles, or exaggerated shocked faces.
+- Use photorealistic subjects, a controlled two-to-three-color palette, purposeful
+  lighting, and strong subject/background separation.
+- Ensure the core idea and text remain understandable at a 320x180 preview size.
 - Render the selected thumbnail text exactly as provided.
 - Place the selected text in the most readable negative space based on the visual composition.
 - Do not force the text to the left, right, top, or bottom.
@@ -1193,6 +1224,8 @@ thumbnail_prompt rules:
 - Do not add any other text, captions, labels, letters, watermarks, or logos.
 - Use a dark contrast area behind the selected text so it is readable at mobile size.
 - Do not mention copyrighted logos unless the user explicitly provided them.
+- Create an original design. Do not copy a specific creator, thumbnail, artwork, or
+  platform image.
 
 seo rules:
 - seo must include title, description, tags, hashtags, keywords.
@@ -1247,6 +1280,7 @@ def normalize_generated_package_plan(
     thumbnail_prompt = str(generated.get("thumbnail_prompt", "")).strip()
     if not thumbnail_prompt or thumbnail_text not in thumbnail_prompt:
         thumbnail_prompt = fallback_prompt
+    thumbnail_prompt = apply_thumbnail_rendering_brief(thumbnail_prompt)
 
     seo = generated.get("seo", {})
     if not isinstance(seo, dict):
@@ -1506,6 +1540,13 @@ def build_fallback_thumbnail_prompt(
         "placed in the most readable empty space, dark stroke or shadow behind text, "
         "correct spelling, readable at mobile size, do not cover face, eyes, hands, "
         "main object, or core emotion, no extra text, no logos."
+    )
+
+
+def apply_thumbnail_rendering_brief(thumbnail_prompt: str) -> str:
+    return (
+        f"Scene and concept:\n{thumbnail_prompt.strip()}\n\n"
+        f"Production direction:\n{THUMBNAIL_RENDERING_BRIEF}"
     )
 
 

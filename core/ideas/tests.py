@@ -1354,12 +1354,18 @@ class IdeasAPITestCase(APITestCase):
             "system_prompt"
         ]
         self.assertNotIn("script rules", system_prompt)
+        self.assertIn("320x180 preview size", system_prompt)
+        self.assertIn("one dominant focal subject", system_prompt)
+        self.assertNotIn("Pinterest", system_prompt)
         image_call = mock_image_client_class.return_value.generate_thumbnail.call_args
         self.assertEqual(
             image_call.kwargs["reference_image_url"],
             "https://res.cloudinary.com/demo/image/upload/creator.jpg",
         )
         self.assertIn("Preserve the creator's recognizable facial identity", image_call.kwargs["prompt"])
+        self.assertIn("Production direction:", image_call.kwargs["prompt"])
+        self.assertIn("controlled two-to-three-color palette", image_call.kwargs["prompt"])
+        self.assertIn("original visual design only", image_call.kwargs["prompt"])
 
     @patch("ideas.services.TextGenerationClient")
     def test_script_generation_is_a_separate_llm_call(self, mock_text_client_class):
