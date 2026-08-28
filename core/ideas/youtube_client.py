@@ -22,8 +22,13 @@ class YouTubeAPIError(ValidationError):
 
 
 class YouTubeClient:
-    def __init__(self, api_key: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        timeout_seconds: int | None = None,
+    ):
         self.api_key = api_key or settings.YOUTUBE_API_KEY
+        self.timeout_seconds = timeout_seconds or 30
         if not self.api_key:
             raise ValidationError(
                 {"youtube_api_key": "YOUTUBE_API_KEY is not configured."}
@@ -174,7 +179,10 @@ class YouTubeClient:
         url = f"{YOUTUBE_API_BASE_URL}/{endpoint}?{urllib.parse.urlencode(params)}"
 
         try:
-            with urllib.request.urlopen(url, timeout=30) as response:
+            with urllib.request.urlopen(
+                url,
+                timeout=self.timeout_seconds,
+            ) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             response_body = exc.read().decode("utf-8", errors="replace")

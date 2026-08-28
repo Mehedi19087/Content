@@ -13,7 +13,18 @@ logger = logging.getLogger(__name__)
 
 
 class TextGenerationClient:
-    """Generate with DeepSeek first and use Groq only when DeepSeek fails."""
+    """Generate JSON with an ordered DeepSeek/Groq fallback chain."""
+
+    def __init__(
+        self,
+        *,
+        prefer_groq: bool = False,
+        timeout_seconds: int | None = None,
+        groq_rate_limit_retries: int | None = None,
+    ):
+        self.prefer_groq = prefer_groq
+        self.timeout_seconds = timeout_seconds
+        self.groq_rate_limit_retries = groq_rate_limit_retries
 
     def generate_json(
         self,
@@ -27,19 +38,40 @@ class TextGenerationClient:
             "user_payload": user_payload,
             "temperature": temperature,
         }
-        try:
-            return DeepSeekClient().generate_json(**request)
-        except ValidationError as deepseek_error:
-            logger.warning("DeepSeek generation failed; trying Groq fallback.")
+        providers = (
+            (("Groq", self._groq_client), ("DeepSeek", self._deepseek_client))
+            if self.prefer_groq
+            else (("DeepSeek", self._deepseek_client), ("Groq", self._groq_client))
+        )
+        errors = {}
+
+        for index, (provider_name, client_factory) in enumerate(providers):
             try:
-                return GroqClient().generate_json(**request)
-            except ValidationError as groq_error:
-                raise ValidationError(
-                    {
-                        "llm_api": (
-                            "DeepSeek and Groq generation both failed. "
-                            f"DeepSeek: {deepseek_error.detail}. "
-                            f"Groq: {groq_error.detail}."
-                        )
-                    }
-                ) from groq_error
+                return client_factory().generate_json(**request)
+            except ValidationError as exc:
+                errors[provider_name] = exc.detail
+                if index == 0:
+                    logger.warning(
+                        "%s generation failed; trying %s fallback.",
+                        provider_name,
+                        providers[1][0],
+                    )
+
+        raise ValidationError(
+            {
+                "llm_api": (
+                    "DeepSeek and Groq generation both failed. "
+                    f"DeepSeek: {errors.get('DeepSeek')}. "
+                    f"Groq: {errors.get('Groq')}."
+                )
+            }
+        )
+
+    def _deepseek_client(self) -> DeepSeekClient:
+        return DeepSeekClient(timeout_seconds=self.timeout_seconds)
+
+    def _groq_client(self) -> GroqClient:
+        return GroqClient(
+            timeout_seconds=self.timeout_seconds,
+            rate_limit_retries=self.groq_rate_limit_retries,
+        )

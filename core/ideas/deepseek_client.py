@@ -16,9 +16,19 @@ performance_logger = logging.getLogger("ideas.performance")
 
 
 class DeepSeekClient:
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout_seconds: int | None = None,
+    ):
         self.api_key = api_key or settings.DEEPSEEK_API_KEY
         self.model = model or settings.DEEPSEEK_MODEL
+        self.timeout_seconds = (
+            settings.DEEPSEEK_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        )
 
         if not self.api_key:
             raise ValidationError(
@@ -63,7 +73,7 @@ class DeepSeekClient:
         try:
             with urllib.request.urlopen(
                 request,
-                timeout=settings.DEEPSEEK_TIMEOUT_SECONDS,
+                timeout=self.timeout_seconds,
             ) as response:
                 data = json.loads(response.read().decode("utf-8"))
             outcome = "succeeded"

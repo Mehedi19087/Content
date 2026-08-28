@@ -4,11 +4,20 @@ import json
 import urllib.parse
 import urllib.request
 
+from django.conf import settings
+
 
 YOUTUBE_SUGGEST_URL = "https://suggestqueries.google.com/complete/search"
 
 
 class YouTubeSuggestClient:
+    def __init__(self, timeout_seconds: int | None = None):
+        self.timeout_seconds = (
+            settings.YOUTUBE_RESEARCH_HTTP_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+
     def fetch_suggestions(
         self,
         *,
@@ -35,7 +44,10 @@ class YouTubeSuggestClient:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with urllib.request.urlopen(
+                request,
+                timeout=self.timeout_seconds,
+            ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception:
             return []

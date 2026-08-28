@@ -55,6 +55,7 @@ class DeepSeekClientTestCase(APITestCase):
         result = DeepSeekClient(
             api_key="deepseek-key",
             model="deepseek-v4-flash",
+            timeout_seconds=25,
         ).generate_json(
             system_prompt="Return JSON.",
             user_payload={"topic": "AI tools"},
@@ -65,6 +66,7 @@ class DeepSeekClientTestCase(APITestCase):
         self.assertEqual(request.full_url, "https://api.deepseek.com/chat/completions")
         self.assertEqual(request.get_header("Authorization"), "Bearer deepseek-key")
         self.assertEqual(request_body["model"], "deepseek-v4-flash")
+        self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 25)
         self.assertEqual(result, {"ideas": []})
 
     @override_settings(DEEPSEEK_API_KEY="", DEEPSEEK_MODEL="deepseek-v4-flash")
@@ -94,6 +96,7 @@ class GroqClientTestCase(APITestCase):
         result = GroqClient(
             api_key="groq-key",
             model="openai/gpt-oss-120b",
+            timeout_seconds=25,
         ).generate_json(
             system_prompt="Return JSON.",
             user_payload={"topic": "AI tools"},
@@ -108,6 +111,7 @@ class GroqClientTestCase(APITestCase):
         self.assertEqual(request_body["model"], "openai/gpt-oss-120b")
         self.assertEqual(request_body["reasoning_effort"], "low")
         self.assertEqual(request_body["max_completion_tokens"], 2048)
+        self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 25)
         self.assertEqual(result, {"ideas": []})
 
     @override_settings(
@@ -189,8 +193,34 @@ class TextGenerationClientTestCase(APITestCase):
         self.assertEqual(result, {"source": "groq"})
         mock_groq_client.return_value.generate_json.assert_called_once()
 
+    @patch("ideas.llm_client.GroqClient")
+    @patch("ideas.llm_client.DeepSeekClient")
+    def test_can_use_fast_groq_first_without_changing_default_order(
+        self,
+        mock_deepseek_client,
+        mock_groq_client,
+    ):
+        mock_groq_client.return_value.generate_json.return_value = {"source": "groq"}
+
+        result = TextGenerationClient(
+            prefer_groq=True,
+            timeout_seconds=25,
+            groq_rate_limit_retries=0,
+        ).generate_json(
+            system_prompt="Return JSON.",
+            user_payload={"topic": "AI tools"},
+        )
+
+        self.assertEqual(result, {"source": "groq"})
+        mock_groq_client.assert_called_once_with(
+            timeout_seconds=25,
+            rate_limit_retries=0,
+        )
+        mock_deepseek_client.assert_not_called()
+
 
 class ContextualIntentAnalysisTestCase(APITestCase):
+    @override_settings(YOUTUBE_RESEARCH_LLM_TIMEOUT_SECONDS=25)
     @patch("ideas.services.TextGenerationClient")
     def test_uses_title_specific_analysis_from_llm(self, mock_text_client_class):
         mock_text_client_class.return_value.generate_json.return_value = {
@@ -271,7 +301,13 @@ class ContextualIntentAnalysisTestCase(APITestCase):
             payload["video_title"],
             "I Tested 5 AI Tools That Automate a Creator Workflow",
         )
+        mock_text_client_class.assert_called_once_with(
+            prefer_groq=True,
+            timeout_seconds=25,
+            groq_rate_limit_retries=0,
+        )
 
+    @override_settings(YOUTUBE_RESEARCH_LLM_TIMEOUT_SECONDS=25)
     @patch("ideas.services.TextGenerationClient")
     def test_falls_back_to_title_and_evidence_when_both_llms_fail(
         self,
@@ -347,6 +383,19 @@ class ContextualIntentAnalysisTestCase(APITestCase):
 
 
 class YouTubeClientTestCase(APITestCase):
+    @patch("ideas.youtube_client.urllib.request.urlopen")
+    def test_custom_timeout_is_used_for_api_requests(self, mock_urlopen):
+        response = MagicMock()
+        response.read.return_value = b'{"items": []}'
+        mock_urlopen.return_value.__enter__.return_value = response
+
+        YouTubeClient(
+            api_key="youtube-key",
+            timeout_seconds=10,
+        ).search_videos_by_query(query="creator workflow")
+
+        self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 10)
+
     def test_popular_videos_skip_unavailable_category_chart(self):
         client = YouTubeClient(api_key="youtube-key")
         client._get = MagicMock(
@@ -944,6 +993,7 @@ class IdeasAPITestCase(APITestCase):
     @patch("ideas.services.TextGenerationClient")
     @patch("ideas.services.YouTubeClient")
     @patch("ideas.services.YouTubeSuggestClient")
+    @override_settings(YOUTUBE_RESEARCH_HTTP_TIMEOUT_SECONDS=10)
     def test_youtube_intent_uses_search_suggestions(
         self,
         mock_suggest_client_class,
@@ -1004,6 +1054,8 @@ class IdeasAPITestCase(APITestCase):
             language_code="en",
         )
 
+        mock_youtube_client_class.assert_called_once_with(timeout_seconds=10)
+        mock_suggest_client_class.assert_called_once_with(timeout_seconds=10)
         mock_suggest_client_class.return_value.fetch_suggestions.assert_called_once_with(
             query="ai agents explained creators",
             region_code="US",
@@ -1055,6 +1107,7 @@ class IdeasAPITestCase(APITestCase):
                 "ai agents for beginners",
             ],
         )
+        self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 10)
 
     @patch("ideas.youtube_suggest_client.urllib.request.urlopen")
     def test_youtube_suggest_failure_does_not_break_intent(self, mock_urlopen):

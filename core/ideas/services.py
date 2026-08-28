@@ -336,13 +336,17 @@ def research_youtube_intent_for_idea(
     max_results: int = 5,
 ) -> dict[str, Any]:
     query = build_youtube_intent_query(idea)
-    youtube_client = YouTubeClient()
+    youtube_client = YouTubeClient(
+        timeout_seconds=settings.YOUTUBE_RESEARCH_HTTP_TIMEOUT_SECONDS,
+    )
 
     def fetch_suggestions():
         return _timed_research_provider_call(
             provider="youtube_suggest",
             operation="fetch_suggestions",
-            callback=lambda: YouTubeSuggestClient().fetch_suggestions(
+            callback=lambda: YouTubeSuggestClient(
+                timeout_seconds=settings.YOUTUBE_RESEARCH_HTTP_TIMEOUT_SECONDS,
+            ).fetch_suggestions(
                 query=query,
                 region_code=region_code,
                 language_code=language_code,
@@ -554,7 +558,11 @@ Field rules:
     )
 
     try:
-        generated = TextGenerationClient().generate_json(
+        generated = TextGenerationClient(
+            prefer_groq=True,
+            timeout_seconds=settings.YOUTUBE_RESEARCH_LLM_TIMEOUT_SECONDS,
+            groq_rate_limit_retries=0,
+        ).generate_json(
             system_prompt=system_prompt,
             user_payload=user_payload,
             temperature=0.35,

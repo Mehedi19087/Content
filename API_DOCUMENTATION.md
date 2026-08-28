@@ -745,6 +745,13 @@ reasoning effort and a 2,048-token completion limit by default; override these
 with `GROQ_REASONING_EFFORT` and `GROQ_MAX_COMPLETION_TOKENS` if needed. Short
 HTTP 429 rate limits are retried once using Groq's requested wait time.
 
+Interactive YouTube research is latency-optimized without changing other text
+generation workflows: it tries Groq first, immediately falls back to DeepSeek on
+failure or rate limiting, and then uses the existing evidence-derived result if both
+providers fail. Research calls use `YOUTUBE_RESEARCH_HTTP_TIMEOUT_SECONDS`
+(default `10`) for YouTube and suggestions, and
+`YOUTUBE_RESEARCH_LLM_TIMEOUT_SECONDS` (default `25`) for each LLM provider.
+
 Cloudinary thumbnail storage requires `CLOUDINARY_CLOUD_NAME`,
 `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` in the backend environment.
 `CLOUDINARY_TIMEOUT_SECONDS` defaults to `60`.

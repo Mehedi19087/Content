@@ -17,9 +17,25 @@ performance_logger = logging.getLogger("ideas.performance")
 
 
 class GroqClient:
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout_seconds: int | None = None,
+        rate_limit_retries: int | None = None,
+    ):
         self.api_key = api_key or settings.GROQ_API_KEY
         self.model = model or settings.GROQ_MODEL
+        self.timeout_seconds = (
+            settings.GROQ_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        self.rate_limit_retries = (
+            settings.GROQ_RATE_LIMIT_RETRIES
+            if rate_limit_retries is None
+            else rate_limit_retries
+        )
 
         if not self.api_key:
             raise ValidationError({"groq_api_key": "GROQ_API_KEY is not configured."})
@@ -78,11 +94,11 @@ class GroqClient:
             ) from exc
 
     def _send_request(self, request: urllib.request.Request) -> dict[str, Any]:
-        for attempt in range(settings.GROQ_RATE_LIMIT_RETRIES + 1):
+        for attempt in range(self.rate_limit_retries + 1):
             try:
                 with urllib.request.urlopen(
                     request,
-                    timeout=settings.GROQ_TIMEOUT_SECONDS,
+                    timeout=self.timeout_seconds,
                 ) as response:
                     return json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
@@ -90,7 +106,7 @@ class GroqClient:
                 retry_wait = _get_retry_wait_seconds(exc, error_body)
                 if (
                     exc.code == 429
-                    and attempt < settings.GROQ_RATE_LIMIT_RETRIES
+                    and attempt < self.rate_limit_retries
                     and retry_wait <= settings.GROQ_MAX_RETRY_WAIT_SECONDS
                 ):
                     time.sleep(retry_wait)
