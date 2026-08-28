@@ -8,6 +8,7 @@ from .views import (
     GeneratePackageAPIView,
     GenerateScriptAPIView,
     IdeaDetailAPIView,
+    PackageHistoryAPIView,
     ThumbnailPreparationAPIView,
     TrendingIdeasAPIView,
     YouTubeIntentResearchAPIView,
@@ -15,6 +16,7 @@ from .views import (
 
 
 urlpatterns = [
+    path("history/", PackageHistoryAPIView.as_view(), name="package-history"),
     path(
         "internal/ideas/refresh/",
         CronRefreshIdeasAPIView.as_view(),

@@ -136,6 +136,51 @@ class ContentPackageJobAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_history_lists_only_users_completed_package_jobs(self):
+        completed = ContentPackageJob.objects.create(
+            user=self.user,
+            job_type=ContentPackageJob.JobType.PACKAGE,
+            status=ContentPackageJob.Status.SUCCEEDED,
+            stage="completed",
+            request_payload=package_request_payload(),
+            result={
+                "thumbnail": {"url": "https://example.com/image.png"},
+                "seo": {"title": "AI tools", "description": "", "tags": []},
+                "edit_options": [],
+            },
+            finished_at=timezone.now(),
+        )
+        ContentPackageJob.objects.create(
+            user=self.other_user,
+            job_type=ContentPackageJob.JobType.PACKAGE,
+            status=ContentPackageJob.Status.SUCCEEDED,
+            request_payload=package_request_payload(),
+            result={"seo": {"title": "Other user's package"}},
+            finished_at=timezone.now(),
+        )
+        ContentPackageJob.objects.create(
+            user=self.user,
+            job_type=ContentPackageJob.JobType.RESEARCH,
+            status=ContentPackageJob.Status.SUCCEEDED,
+            request_payload=research_request_payload(),
+            result={"viewer_intent": "Research is not package history."},
+            finished_at=timezone.now(),
+        )
+
+        response = self.client.get(reverse("package-history"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["data"]), 1)
+        self.assertEqual(response.data["data"][0]["id"], str(completed.id))
+        self.assertEqual(
+            response.data["data"][0]["idea_title"],
+            package_request_payload()["idea"],
+        )
+        self.assertEqual(
+            response.data["data"][0]["package"]["seo"]["title"],
+            "AI tools",
+        )
+
     @override_settings(CONTENT_PACKAGE_JOB_STALE_SECONDS=600)
     def test_stale_pending_job_becomes_failed(self):
         job = ContentPackageJob.objects.create(

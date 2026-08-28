@@ -17,6 +17,7 @@ from .serializers import (
     ResponseChannelLogoUploadSerializer,
     ResponseCreatorImageUploadSerializer,
     ResponseIdeaCandidateSerializer,
+    ResponseSavedPackageSerializer,
     ResponseThumbnailPreparationSerializer,
     ThumbnailPreparationSerializer,
     TrendingIdeaQuerySerializer,
@@ -28,6 +29,7 @@ from .services import (
     create_or_reuse_research_job,
     create_script_job,
     get_content_package_job,
+    get_content_package_history,
     get_active_idea,
     get_active_ideas,
     mark_content_package_job_dispatched,
@@ -372,6 +374,21 @@ class ContentPackageJobDetailAPIView(APIView):
         return Response(
             {
                 "message": "content package generation status retrieved successfully",
+                "data": response_serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PackageHistoryAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        packages = get_content_package_history(user=request.user)
+        response_serializer = ResponseSavedPackageSerializer(packages, many=True)
+        return Response(
+            {
+                "message": "package history retrieved successfully",
                 "data": response_serializer.data,
             },
             status=status.HTTP_200_OK,

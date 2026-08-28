@@ -1194,6 +1194,16 @@ def get_content_package_job(*, user, job_id):
     return job
 
 
+def get_content_package_history(*, user):
+    """Return completed thumbnail/SEO packages owned by the current user."""
+    return ContentPackageJob.objects.filter(
+        user=user,
+        job_type=ContentPackageJob.JobType.PACKAGE,
+        status=ContentPackageJob.Status.SUCCEEDED,
+        result__isnull=False,
+    ).order_by("-finished_at", "-created_at")
+
+
 def mark_content_package_job_dispatched(*, job_id, task_id: str):
     ContentPackageJob.objects.filter(id=job_id).update(
         celery_task_id=task_id,

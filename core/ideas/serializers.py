@@ -273,3 +273,13 @@ class ResponseContentPackageJobSerializer(serializers.Serializer):
     created_at = serializers.DateTimeField(read_only=True)
     started_at = serializers.DateTimeField(read_only=True, allow_null=True)
     finished_at = serializers.DateTimeField(read_only=True, allow_null=True)
+
+
+class ResponseSavedPackageSerializer(serializers.Serializer):
+    id = serializers.UUIDField(read_only=True)
+    idea_title = serializers.CharField(source="request_payload.idea", read_only=True)
+    saved_at = serializers.SerializerMethodField()
+    package = serializers.JSONField(source="result", read_only=True)
+
+    def get_saved_at(self, obj):
+        return obj.finished_at or obj.created_at
