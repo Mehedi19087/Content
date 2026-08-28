@@ -9,7 +9,14 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from billing.models import Plan, Subscription, UserPackageQuota
 from .models import ContentPackageJob
+from .services import (
+    create_content_package_job,
+    mark_content_package_job_failed,
+    mark_content_package_job_succeeded,
+    start_content_package_job,
+)
 from .tasks import (
     generate_content_package_task,
     generate_content_script_task,
@@ -68,6 +75,13 @@ def script_request_payload():
 class ContentPackageJobAPITestCase(APITestCase):
     def setUp(self):
         creator_group = Group.objects.create(name="Creator Users")
+        self.plan = Plan.objects.create(
+            slug="creator",
+            name="Creator",
+            group="Creator Users",
+            lemon_variant_id="package-jobs-creator",
+            monthly_package_limit=45,
+        )
         self.user = User.objects.create_user(username="creator", password="password")
         self.user.groups.add(creator_group)
         self.other_user = User.objects.create_user(
@@ -75,6 +89,22 @@ class ContentPackageJobAPITestCase(APITestCase):
             password="password",
         )
         self.other_user.groups.add(creator_group)
+        Subscription.objects.create(
+            user=self.user,
+            plan=self.plan,
+            lemon_subscription_id="package-jobs-user",
+            status=Subscription.Status.ACTIVE,
+            current_period_end=timezone.now() + timedelta(days=30),
+            is_current=True,
+        )
+        Subscription.objects.create(
+            user=self.other_user,
+            plan=self.plan,
+            lemon_subscription_id="package-jobs-other-user",
+            status=Subscription.Status.ACTIVE,
+            current_period_end=timezone.now() + timedelta(days=30),
+            is_current=True,
+        )
         self.client.force_authenticate(user=self.user)
 
     @patch("ideas.views.generate_content_package_task.apply_async")
@@ -91,7 +121,9 @@ class ContentPackageJobAPITestCase(APITestCase):
         job = ContentPackageJob.objects.get(id=response.data["data"]["id"])
         self.assertEqual(job.user, self.user)
         self.assertEqual(job.status, ContentPackageJob.Status.PENDING)
+        self.assertEqual(job.quota_status, ContentPackageJob.QuotaStatus.RESERVED)
         self.assertEqual(job.celery_task_id, "celery-task-id")
+        self.assertEqual(UserPackageQuota.objects.get(user=self.user).remaining, 44)
         mock_delay.assert_called_once_with(args=[str(job.id)], retry=False)
 
     @patch("ideas.views.generate_content_package_task.apply_async")
@@ -108,7 +140,88 @@ class ContentPackageJobAPITestCase(APITestCase):
         job = ContentPackageJob.objects.get(user=self.user)
         self.assertEqual(job.status, ContentPackageJob.Status.FAILED)
         self.assertEqual(job.error_code, "queue_unavailable")
+        self.assertEqual(job.quota_status, ContentPackageJob.QuotaStatus.REFUNDED)
+        self.assertEqual(UserPackageQuota.objects.get(user=self.user).remaining, 45)
         self.assertNotIn("Redis unavailable", response.data["message"])
+
+    @patch("ideas.views.generate_content_package_task.apply_async")
+    def test_generation_is_rejected_when_monthly_limit_is_used(self, mock_delay):
+        today = timezone.now().date()
+        period_start = today.replace(day=1)
+        period_end = (
+            period_start.replace(year=period_start.year + 1, month=1)
+            if period_start.month == 12
+            else period_start.replace(month=period_start.month + 1)
+        )
+        UserPackageQuota.objects.create(
+            user=self.user,
+            allowance=45,
+            remaining=0,
+            period_start=period_start,
+            period_end=period_end,
+        )
+
+        response = self.client.post(
+            reverse("ideas-generate-package"),
+            package_request_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(response.data["code"], "monthly_package_limit_reached")
+        self.assertFalse(ContentPackageJob.objects.exists())
+        mock_delay.assert_not_called()
+
+    def test_success_consumes_reserved_package(self):
+        job = create_content_package_job(
+            user=self.user,
+            request_payload=package_request_payload(),
+        )
+        start_content_package_job(job_id=job.id)
+
+        mark_content_package_job_succeeded(
+            job_id=job.id,
+            result={"thumbnail": {}, "seo": {}},
+        )
+
+        job.refresh_from_db()
+        quota = UserPackageQuota.objects.get(user=self.user)
+        self.assertEqual(job.quota_status, ContentPackageJob.QuotaStatus.CONSUMED)
+        self.assertEqual(quota.remaining, 44)
+
+    def test_failure_refunds_reserved_package_only_once(self):
+        job = create_content_package_job(
+            user=self.user,
+            request_payload=package_request_payload(),
+        )
+        start_content_package_job(job_id=job.id)
+
+        mark_content_package_job_failed(job_id=job.id)
+        mark_content_package_job_failed(job_id=job.id)
+
+        job.refresh_from_db()
+        quota = UserPackageQuota.objects.get(user=self.user)
+        self.assertEqual(job.quota_status, ContentPackageJob.QuotaStatus.REFUNDED)
+        self.assertEqual(quota.remaining, 45)
+
+    def test_first_request_in_new_month_refills_wallet(self):
+        UserPackageQuota.objects.create(
+            user=self.user,
+            allowance=45,
+            remaining=0,
+            period_start=timezone.now().date().replace(day=1) - timedelta(days=1),
+            period_end=timezone.now().date().replace(day=1),
+        )
+
+        create_content_package_job(
+            user=self.user,
+            request_payload=package_request_payload(),
+        )
+
+        quota = UserPackageQuota.objects.get(user=self.user)
+        self.assertEqual(quota.allowance, 45)
+        self.assertEqual(quota.remaining, 44)
+        self.assertEqual(quota.period_start, timezone.now().date().replace(day=1))
 
     def test_user_can_fetch_own_job(self):
         job = ContentPackageJob.objects.create(

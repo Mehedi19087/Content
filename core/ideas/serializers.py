@@ -267,6 +267,7 @@ class ResponseContentPackageJobSerializer(serializers.Serializer):
     job_type = serializers.CharField(read_only=True)
     status = serializers.CharField(read_only=True)
     stage = serializers.CharField(read_only=True)
+    quota_status = serializers.CharField(read_only=True)
     result = serializers.JSONField(read_only=True, allow_null=True)
     error_code = serializers.CharField(read_only=True, allow_blank=True)
     error_message = serializers.CharField(read_only=True, allow_blank=True)

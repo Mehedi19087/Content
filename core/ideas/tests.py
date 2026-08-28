@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from io import BytesIO
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -8,11 +9,13 @@ from django.contrib.auth.models import Group
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from categories.models import Category
+from billing.models import Plan, Subscription
 from .deepseek_client import DeepSeekClient
 from .groq_client import GroqClient
 from .llm_client import TextGenerationClient
@@ -614,6 +617,21 @@ class IdeasAPITestCase(APITestCase):
         )
         creator_group, _ = Group.objects.get_or_create(name="Creator Users")
         self.user.groups.add(creator_group)
+        self.plan = Plan.objects.create(
+            slug="creator",
+            name="Creator",
+            group="Creator Users",
+            lemon_variant_id="ideas-tests-creator",
+            monthly_package_limit=45,
+        )
+        Subscription.objects.create(
+            user=self.user,
+            plan=self.plan,
+            lemon_subscription_id="ideas-tests-user",
+            status=Subscription.Status.ACTIVE,
+            current_period_end=timezone.now() + timedelta(days=30),
+            is_current=True,
+        )
         self.client.force_authenticate(user=self.user)
 
         self.category = Category.objects.create(

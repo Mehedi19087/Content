@@ -33,6 +33,7 @@ class Plan(models.Model):
     lemon_product_id = models.CharField(max_length=80, blank=True, default="")
     lemon_variant_id = models.CharField(max_length=80, unique=True)
     price_usd_cents = models.PositiveIntegerField(default=0)
+    monthly_package_limit = models.PositiveIntegerField(default=0)
     interval = models.CharField(max_length=10, choices=Interval.choices, default=Interval.MONTH)
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
@@ -84,6 +85,37 @@ class Subscription(models.Model):
 
     def __str__(self) -> str:
         return f"Subscription {self.lemon_subscription_id} ({self.status})"
+
+
+class UserPackageQuota(models.Model):
+    """The user's remaining content-package allowance for one calendar month."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="package_quota",
+    )
+    allowance = models.PositiveIntegerField(default=0)
+    remaining = models.PositiveIntegerField(default=0)
+    period_start = models.DateField()
+    period_end = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(remaining__lte=models.F("allowance")),
+                name="package_quota_remaining_lte_allowance",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(period_start__lt=models.F("period_end")),
+                name="package_quota_valid_period",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Package quota for user {self.user_id}: {self.remaining}/{self.allowance}"
 
 
 class WebhookEvent(models.Model):

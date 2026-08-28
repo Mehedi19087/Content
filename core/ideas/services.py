@@ -18,6 +18,7 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
+from billing.services import refund_package_quota, reserve_package_quota
 from categories.models import Category
 from .llm_client import TextGenerationClient
 from .models import ContentPackageJob, IdeaCandidate
@@ -960,11 +961,16 @@ def create_content_package_job(*, user, request_payload: dict[str, Any]):
         user=user,
         channel_logo_choice=request_payload.get("channel_logo_choice", {}),
     )
-    return ContentPackageJob.objects.create(
-        user=user,
-        job_type=ContentPackageJob.JobType.PACKAGE,
-        request_payload=request_payload,
-    )
+    with transaction.atomic():
+        quota_period = reserve_package_quota(user=user)
+        return ContentPackageJob.objects.create(
+            user=user,
+            job_type=ContentPackageJob.JobType.PACKAGE,
+            request_payload=request_payload,
+            quota_status=ContentPackageJob.QuotaStatus.RESERVED,
+            quota_period_start=quota_period["period_start"],
+            quota_period_end=quota_period["period_end"],
+        )
 
 
 def upload_creator_image(*, user, image_file) -> dict[str, str]:
@@ -1182,13 +1188,11 @@ def get_content_package_job(*, user, job_id):
         and job.started_at < stale_before
     )
     if is_stale_pending or is_stale_processing:
-        ContentPackageJob.objects.filter(id=job.id, status=job.status).update(
-            status=ContentPackageJob.Status.FAILED,
-            stage="failed",
+        _mark_content_package_job_failed_and_refund(
+            job_id=job.id,
+            allowed_statuses=(job.status,),
             error_code="generation_timed_out",
             error_message="Content package generation timed out. Please try again.",
-            finished_at=timezone.now(),
-            updated_at=timezone.now(),
         )
         job.refresh_from_db()
     return job
@@ -1212,16 +1216,11 @@ def mark_content_package_job_dispatched(*, job_id, task_id: str):
 
 
 def mark_content_package_job_queue_failed(*, job_id):
-    ContentPackageJob.objects.filter(
-        id=job_id,
-        status=ContentPackageJob.Status.PENDING,
-    ).update(
-        status=ContentPackageJob.Status.FAILED,
-        stage="failed",
+    _mark_content_package_job_failed_and_refund(
+        job_id=job_id,
+        allowed_statuses=(ContentPackageJob.Status.PENDING,),
         error_code="queue_unavailable",
         error_message="The background job could not be started. Please try again.",
-        finished_at=timezone.now(),
-        updated_at=timezone.now(),
     )
 
 
@@ -1268,16 +1267,30 @@ def start_content_package_job(
 
 
 def mark_content_package_job_succeeded(*, job_id, result: dict[str, Any]):
-    ContentPackageJob.objects.filter(
-        id=job_id,
-        status=ContentPackageJob.Status.PROCESSING,
-    ).update(
-        status=ContentPackageJob.Status.SUCCEEDED,
-        stage="completed",
-        result=result,
-        finished_at=timezone.now(),
-        updated_at=timezone.now(),
-    )
+    with transaction.atomic():
+        job = (
+            ContentPackageJob.objects.select_for_update()
+            .filter(id=job_id, status=ContentPackageJob.Status.PROCESSING)
+            .first()
+        )
+        if job is None:
+            return
+        job.status = ContentPackageJob.Status.SUCCEEDED
+        job.stage = "completed"
+        job.result = result
+        job.finished_at = timezone.now()
+        if job.quota_status == ContentPackageJob.QuotaStatus.RESERVED:
+            job.quota_status = ContentPackageJob.QuotaStatus.CONSUMED
+        job.save(
+            update_fields=[
+                "status",
+                "stage",
+                "result",
+                "finished_at",
+                "quota_status",
+                "updated_at",
+            ]
+        )
 
 
 def mark_content_package_job_failed(
@@ -1286,17 +1299,54 @@ def mark_content_package_job_failed(
     error_code="generation_failed",
     error_message="Generation failed. Please try again.",
 ):
-    ContentPackageJob.objects.filter(
-        id=job_id,
-        status=ContentPackageJob.Status.PROCESSING,
-    ).update(
-        status=ContentPackageJob.Status.FAILED,
-        stage="failed",
+    _mark_content_package_job_failed_and_refund(
+        job_id=job_id,
+        allowed_statuses=(ContentPackageJob.Status.PROCESSING,),
         error_code=error_code,
         error_message=error_message,
-        finished_at=timezone.now(),
-        updated_at=timezone.now(),
     )
+
+
+def _mark_content_package_job_failed_and_refund(
+    *,
+    job_id,
+    allowed_statuses,
+    error_code: str,
+    error_message: str,
+):
+    with transaction.atomic():
+        job = (
+            ContentPackageJob.objects.select_for_update()
+            .select_related("user")
+            .filter(id=job_id, status__in=allowed_statuses)
+            .first()
+        )
+        if job is None:
+            return
+
+        job.status = ContentPackageJob.Status.FAILED
+        job.stage = "failed"
+        job.error_code = error_code
+        job.error_message = error_message
+        job.finished_at = timezone.now()
+        if job.quota_status == ContentPackageJob.QuotaStatus.RESERVED:
+            refund_package_quota(
+                user=job.user,
+                period_start=job.quota_period_start,
+                period_end=job.quota_period_end,
+            )
+            job.quota_status = ContentPackageJob.QuotaStatus.REFUNDED
+        job.save(
+            update_fields=[
+                "status",
+                "stage",
+                "error_code",
+                "error_message",
+                "finished_at",
+                "quota_status",
+                "updated_at",
+            ]
+        )
 
 
 def generate_package_plan_with_llm(

@@ -19,6 +19,7 @@ class PlanSerializer(serializers.ModelSerializer):
             "description",
             "group",
             "price_usd_cents",
+            "monthly_package_limit",
             "interval",
             "is_active",
             "sort_order",
@@ -34,6 +35,14 @@ class CheckoutResponseSerializer(serializers.Serializer):
     checkout_url = serializers.URLField()
 
 
+class PackageUsageSerializer(serializers.Serializer):
+    limit = serializers.IntegerField()
+    used = serializers.IntegerField()
+    remaining = serializers.IntegerField()
+    period_start = serializers.DateField()
+    period_end = serializers.DateField()
+
+
 class BillingStatusSerializer(serializers.Serializer):
     plan = serializers.CharField(allow_null=True)
     plan_name = serializers.CharField(allow_null=True)
@@ -42,6 +51,7 @@ class BillingStatusSerializer(serializers.Serializer):
     current_period_end = serializers.DateTimeField(allow_null=True)
     cancelled_at = serializers.DateTimeField(allow_null=True)
     lemon_subscription_id = serializers.CharField(allow_null=True)
+    package_usage = PackageUsageSerializer()
 
 
 class PortalResponseSerializer(serializers.Serializer):

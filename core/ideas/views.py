@@ -307,7 +307,7 @@ class ChannelLogoUploadAPIView(APIView):
 
 
 class GeneratePackageAPIView(APIView):
-    permission_classes = [HasCreatorPermission]
+    permission_classes = [HasStarterPermission]
 
     def post(self, request):
         started_at = time.perf_counter()

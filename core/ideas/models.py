@@ -71,6 +71,12 @@ class ContentPackageJob(models.Model):
         SUCCEEDED = "succeeded", "Succeeded"
         FAILED = "failed", "Failed"
 
+    class QuotaStatus(models.TextChoices):
+        NOT_APPLICABLE = "not_applicable", "Not applicable"
+        RESERVED = "reserved", "Reserved"
+        CONSUMED = "consumed", "Consumed"
+        REFUNDED = "refunded", "Refunded"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     job_type = models.CharField(
         max_length=20,
@@ -95,6 +101,14 @@ class ContentPackageJob(models.Model):
     error_code = models.CharField(max_length=80, blank=True)
     error_message = models.TextField(blank=True)
     celery_task_id = models.CharField(max_length=255, blank=True)
+    quota_status = models.CharField(
+        max_length=20,
+        choices=QuotaStatus.choices,
+        default=QuotaStatus.NOT_APPLICABLE,
+        db_index=True,
+    )
+    quota_period_start = models.DateField(null=True, blank=True)
+    quota_period_end = models.DateField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

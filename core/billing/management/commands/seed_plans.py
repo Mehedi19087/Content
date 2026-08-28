@@ -16,9 +16,9 @@ Group <-> Plan mapping (matches the tier hierarchy in users/permissions.py):
 
     Plan slug | Group name     | Unlocks API endpoints (cumulative)
     ---------+----------------+---------------------------------------
-    starter  | Starter Users  | ideas/youtube-intent
+    starter  | Starter Users  | ideas/youtube-intent, ideas/generate-package
     pro      | Pro Users       | + ideas/thumbnail-preparation, youtube/* (channel ops)
-    ultra    | Ultra Users    | + ideas/generate-package
+    ultra    | Ultra Users    | highest monthly package allowance
 
 Free Users is the default group; no Plan row is needed for it.
 """
@@ -40,6 +40,7 @@ TIER_DEFS = [
         "variant_envs": ["STARTER_VARIANT_ID"],
         "product_envs": ["STARTER_PRODUCT_ID"],
         "price_cents": 999,
+        "monthly_package_limit": 10,
         "interval": Plan.Interval.MONTH,
         "sort_order": 1,
     },
@@ -51,6 +52,7 @@ TIER_DEFS = [
         "variant_envs": ["PRO_VARIANT_ID"],
         "product_envs": ["PRO_PRODUCT_ID"],
         "price_cents": 1999,
+        "monthly_package_limit": 25,
         "interval": Plan.Interval.MONTH,
         "sort_order": 2,
     },
@@ -62,6 +64,7 @@ TIER_DEFS = [
         "variant_envs": ["ULTRA_VARIANT_ID", "CREATOR_VARIANT_ID"],
         "product_envs": ["ULTRA_PRODUCT_ID", "CREATOR_PRODUCT_ID"],
         "price_cents": 3499,
+        "monthly_package_limit": 45,
         "interval": Plan.Interval.MONTH,
         "sort_order": 3,
     },
@@ -76,6 +79,7 @@ YEARLY_TIER_DEFS = [
         "variant_envs": ["STARTER_YEARLY_VARIANT_ID"],
         "product_envs": ["STARTER_PRODUCT_ID"],
         "price_cents": 7999,
+        "monthly_package_limit": 10,
         "interval": Plan.Interval.YEAR,
         "sort_order": 4,
     },
@@ -87,6 +91,7 @@ YEARLY_TIER_DEFS = [
         "variant_envs": ["PRO_YEARLY_VARIANT_ID"],
         "product_envs": ["PRO_PRODUCT_ID"],
         "price_cents": 19199,
+        "monthly_package_limit": 25,
         "interval": Plan.Interval.YEAR,
         "sort_order": 5,
     },
@@ -98,6 +103,7 @@ YEARLY_TIER_DEFS = [
         "variant_envs": ["ULTRA_YEARLY_VARIANT_ID", "CREATOR_YEARLY_VARIANT_ID"],
         "product_envs": ["ULTRA_PRODUCT_ID", "CREATOR_PRODUCT_ID"],
         "price_cents": 33599,
+        "monthly_package_limit": 45,
         "interval": Plan.Interval.YEAR,
         "sort_order": 6,
     },
@@ -130,6 +136,7 @@ def _upsert_plan(definition: dict) -> tuple[Plan, bool]:
     plan.lemon_product_id = product_id
     plan.lemon_variant_id = variant_id
     plan.price_usd_cents = definition["price_cents"]
+    plan.monthly_package_limit = definition["monthly_package_limit"]
     plan.interval = definition["interval"]
     plan.is_active = True
     plan.sort_order = definition["sort_order"]

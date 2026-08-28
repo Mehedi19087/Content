@@ -572,7 +572,12 @@ The `youtube_intent` object must contain these fields:
 ## 10. POST `ideas/generate-package/`
 
 Start background generation of the final content package, including an OpenAI
-thumbnail, SEO metadata, script, and edit options.
+thumbnail, SEO metadata, and edit options.
+
+Available to every paid tier. One monthly package slot is reserved when the
+job is accepted. A successful job consumes the slot; a failed, timed-out, or
+undispatched job refunds it. Monthly limits are Starter 10, Pro 25, and Ultra
+45, and reset on the first day of each UTC calendar month.
 
 **Request:**
 
@@ -626,6 +631,7 @@ thumbnail, SEO metadata, script, and edit options.
     "id": "2ec63e12-8e34-4f65-b9b7-c6d7e7017780",
     "status": "pending",
     "stage": "queued",
+    "quota_status": "reserved",
     "result": null,
     "error_code": "",
     "error_message": "",
@@ -638,6 +644,10 @@ thumbnail, SEO metadata, script, and edit options.
 
 The frontend should poll `GET ideas/generation-jobs/{id}/` until the status is
 `succeeded` or `failed`.
+
+**Response (429):** The caller has no package generations remaining in the
+current monthly period. The response includes `limit`, `used`, `remaining`,
+and `period_end`.
 
 ## 10.1 GET `ideas/generation-jobs/{id}/`
 
@@ -770,9 +780,12 @@ Entitlement is group-based: each Plan maps to a Django auth Group, and the user 
 | Tier (Group) | Unlocks |
 |---|---|
 | Free Users | `GET ideas/trending/` |
-| Starter Users | + `POST ideas/youtube-intent/` |
-| Pro Users | + `POST ideas/thumbnail-preparation/`, all `youtube/*` endpoints |
-| Creator Users | + `POST ideas/generate-package/` |
+| Starter Users | + `POST ideas/youtube-intent/`, `POST ideas/generate-package/` (10/month) |
+| Pro Users | + `POST ideas/thumbnail-preparation/`, all `youtube/*` endpoints (25 packages/month) |
+| Ultra / Creator Users | Highest package allowance (45/month) |
+
+Pro users receive 25 package generations per month. Package limits are also
+returned by the plans API rather than being hard-coded by clients.
 
 ### 11.1 GET `billing/plans/`
 
@@ -790,7 +803,8 @@ List all active purchasable plans, ordered by `sort_order`.
       "name": "Starter",
       "description": "Generate fresh trending ideas and YouTube intent research.",
       "group": "Starter Users",
-      "price_usd_cents": 1900,
+      "price_usd_cents": 999,
+      "monthly_package_limit": 10,
       "interval": "month",
       "is_active": true,
       "sort_order": 1
@@ -848,7 +862,14 @@ Returns the caller's current subscription state. Always calls `recompute_user_en
     "status": "active",
     "current_period_end": "2026-08-31T10:00:00Z",
     "cancelled_at": null,
-    "lemon_subscription_id": "sub_abc"
+    "lemon_subscription_id": "sub_abc",
+    "package_usage": {
+      "limit": 25,
+      "used": 7,
+      "remaining": 18,
+      "period_start": "2026-08-01",
+      "period_end": "2026-09-01"
+    }
   }
 }
 ```

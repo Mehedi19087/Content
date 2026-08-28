@@ -41,8 +41,13 @@ from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
 from .client import LemonSqueezyClient
-from .exceptions import BillingAPIError, BillingConfigurationError, WebhookSignatureError
-from .models import Plan, Subscription, WebhookEvent
+from .exceptions import (
+    BillingAPIError,
+    BillingConfigurationError,
+    PackageQuotaExceeded,
+    WebhookSignatureError,
+)
+from .models import Plan, Subscription, UserPackageQuota, WebhookEvent
 
 
 logger = logging.getLogger("billing.services")
@@ -61,6 +66,136 @@ ACTIVE_GRANTING_STATUSES = (
     # the user back to Free Users.
     Subscription.Status.CANCELLED,
 )
+
+
+def _current_calendar_month() -> tuple[Any, Any]:
+    today = timezone.now().date()
+    period_start = today.replace(day=1)
+    if period_start.month == 12:
+        period_end = period_start.replace(
+            year=period_start.year + 1,
+            month=1,
+        )
+    else:
+        period_end = period_start.replace(month=period_start.month + 1)
+    return period_start, period_end
+
+
+def _current_package_plan(user) -> Plan | None:
+    subscription = (
+        Subscription.objects.select_related("plan")
+        .filter(
+            user=user,
+            status__in=ACTIVE_GRANTING_STATUSES,
+            current_period_end__isnull=False,
+            current_period_end__gt=timezone.now(),
+        )
+        .order_by("-current_period_end")
+        .first()
+    )
+    return subscription.plan if subscription else None
+
+
+def _sync_package_quota(*, user, plan: Plan) -> UserPackageQuota:
+    period_start, period_end = _current_calendar_month()
+    quota, created = UserPackageQuota.objects.get_or_create(
+        user=user,
+        defaults={
+            "allowance": plan.monthly_package_limit,
+            "remaining": plan.monthly_package_limit,
+            "period_start": period_start,
+            "period_end": period_end,
+        },
+    )
+    if created:
+        return quota
+
+    changed_fields = []
+    if quota.period_start != period_start:
+        quota.allowance = plan.monthly_package_limit
+        quota.remaining = plan.monthly_package_limit
+        quota.period_start = period_start
+        quota.period_end = period_end
+        changed_fields.extend(
+            ["allowance", "remaining", "period_start", "period_end"]
+        )
+    elif plan.monthly_package_limit > quota.allowance:
+        added_allowance = plan.monthly_package_limit - quota.allowance
+        quota.allowance = plan.monthly_package_limit
+        quota.remaining = min(
+            plan.monthly_package_limit,
+            quota.remaining + added_allowance,
+        )
+        changed_fields.extend(["allowance", "remaining"])
+
+    if changed_fields:
+        quota.save(update_fields=[*changed_fields, "updated_at"])
+    return quota
+
+
+def get_package_usage(*, user) -> dict[str, Any]:
+    """Return the current wallet state, lazily creating/resetting it if paid."""
+    period_start, period_end = _current_calendar_month()
+    plan = _current_package_plan(user)
+    if plan is None:
+        return {
+            "limit": 0,
+            "used": 0,
+            "remaining": 0,
+            "period_start": period_start,
+            "period_end": period_end,
+        }
+
+    with transaction.atomic():
+        User.objects.select_for_update().get(pk=user.pk)
+        quota = _sync_package_quota(user=user, plan=plan)
+        return {
+            "limit": quota.allowance,
+            "used": quota.allowance - quota.remaining,
+            "remaining": quota.remaining,
+            "period_start": quota.period_start,
+            "period_end": quota.period_end,
+        }
+
+
+def reserve_package_quota(*, user) -> dict[str, Any]:
+    """Atomically take one package from the user's current monthly wallet."""
+    with transaction.atomic():
+        User.objects.select_for_update().get(pk=user.pk)
+        plan = _current_package_plan(user)
+        if plan is None:
+            raise ValidationError(
+                {"plan": "An active paid subscription is required."}
+            )
+        quota = _sync_package_quota(user=user, plan=plan)
+        if quota.remaining == 0:
+            raise PackageQuotaExceeded(
+                limit=quota.allowance,
+                period_end=quota.period_end,
+            )
+        quota.remaining -= 1
+        quota.save(update_fields=["remaining", "updated_at"])
+        return {
+            "period_start": quota.period_start,
+            "period_end": quota.period_end,
+        }
+
+
+def refund_package_quota(*, user, period_start, period_end) -> bool:
+    """Return a reserved slot only when its original wallet period is active."""
+    with transaction.atomic():
+        User.objects.select_for_update().get(pk=user.pk)
+        quota = UserPackageQuota.objects.select_for_update().filter(user=user).first()
+        if (
+            quota is None
+            or quota.period_start != period_start
+            or quota.period_end != period_end
+        ):
+            return False
+        if quota.remaining < quota.allowance:
+            quota.remaining += 1
+            quota.save(update_fields=["remaining", "updated_at"])
+        return True
 
 
 # ----------------------------------------------------------------------
@@ -517,4 +652,5 @@ def get_billing_status(*, user) -> dict[str, Any]:
         "current_period_end": sub.current_period_end if sub else None,
         "cancelled_at": sub.cancelled_at if sub else None,
         "lemon_subscription_id": sub.lemon_subscription_id if sub else None,
+        "package_usage": get_package_usage(user=user),
     }

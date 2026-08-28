@@ -35,11 +35,13 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from billing.exceptions import BillingConfigurationError
-from billing.models import Plan, Subscription, WebhookEvent
+from billing.models import Plan, Subscription, UserPackageQuota, WebhookEvent
 from billing.services import (
     EVENT_HANDLERS,
+    get_package_usage,
     handle_webhook_event,
     recompute_user_entitlement,
+    reserve_package_quota,
     verify_webhook_signature,
 )
 
@@ -109,6 +111,7 @@ class BillingTestCase(APITestCase):
             group="Pro Users",
             lemon_variant_id="variant_pro",
             price_usd_cents=4900,
+            monthly_package_limit=25,
             interval=Plan.Interval.MONTH,
             sort_order=2,
         )
@@ -118,15 +121,17 @@ class BillingTestCase(APITestCase):
             group="Creator Users",
             lemon_variant_id="variant_creator",
             price_usd_cents=9900,
+            monthly_package_limit=45,
             interval=Plan.Interval.MONTH,
             sort_order=3,
         )
-        Plan.objects.create(
+        cls.plan_starter = Plan.objects.create(
             slug="starter",
             name="Starter",
             group="Starter Users",
             lemon_variant_id="variant_starter",
             price_usd_cents=1900,
+            monthly_package_limit=10,
             interval=Plan.Interval.MONTH,
             sort_order=1,
         )
@@ -428,12 +433,46 @@ class BillingStatusViewTests(BillingTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         self.assertEqual(response.data["data"]["plan"], "pro")
         self.assertEqual(response.data["data"]["group"], "Pro Users")
+        self.assertEqual(
+            response.data["data"]["package_usage"],
+            {
+                "limit": 25,
+                "used": 0,
+                "remaining": 25,
+                "period_start": timezone.now().date().replace(day=1).isoformat(),
+                "period_end": UserPackageQuota.objects.get(user=self.user)
+                .period_end.isoformat(),
+            },
+        )
 
     def test_status_shows_free_without_subscription(self):
         response = self.client.get(reverse("billing-status"))
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         self.assertEqual(response.data["data"]["group"], "Free Users")
         self.assertIsNone(response.data["data"]["plan"])
+        self.assertEqual(response.data["data"]["package_usage"]["limit"], 0)
+
+
+class PackageQuotaServiceTests(BillingTestCase):
+    def test_upgrade_adds_only_the_allowance_difference(self):
+        subscription = Subscription.objects.create(
+            user=self.user,
+            plan=self.plan_starter,
+            lemon_subscription_id="sub_quota_upgrade",
+            status=Subscription.Status.ACTIVE,
+            current_period_end=NOW + timedelta(days=20),
+            is_current=True,
+        )
+        reserve_package_quota(user=self.user)
+        self.assertEqual(UserPackageQuota.objects.get(user=self.user).remaining, 9)
+
+        subscription.plan = self.plan_pro
+        subscription.save(update_fields=["plan", "updated_at"])
+
+        usage = get_package_usage(user=self.user)
+        self.assertEqual(usage["limit"], 25)
+        self.assertEqual(usage["used"], 1)
+        self.assertEqual(usage["remaining"], 24)
 
 
 class PortalViewTests(BillingTestCase):
@@ -496,6 +535,11 @@ class PlansViewTests(BillingTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         slugs = [plan["slug"] for plan in response.data["data"]]
         self.assertEqual(slugs, ["starter", "pro", "creator"])
+        limits = {
+            plan["slug"]: plan["monthly_package_limit"]
+            for plan in response.data["data"]
+        }
+        self.assertEqual(limits, {"starter": 10, "pro": 25, "creator": 45})
 
 
 # ----------------------------------------------------------------------
