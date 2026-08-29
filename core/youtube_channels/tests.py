@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
 from .models import YouTubeChannel, YouTubeChannelAnalysis
@@ -145,6 +146,13 @@ class FakeYouTubeClient:
 class FakeTextGenerationClient:
     def generate_json(self, **kwargs):
         return {"gaps": []}
+
+
+class FakeYouTubeClientWithoutRefreshToken(FakeYouTubeClient):
+    def exchange_code(self, *, code, redirect_uri):
+        token_data = super().exchange_code(code=code, redirect_uri=redirect_uri)
+        token_data.pop("refresh_token")
+        return token_data
 
 
 @override_settings(
@@ -303,6 +311,33 @@ class YouTubeServiceTests(APITestCase):
         self.assertIsNone(channel.last_analyzed_at)
         self.assertFalse(YouTubeChannelAnalysis.objects.filter(channel=channel).exists())
 
+    def test_different_channel_requires_a_new_refresh_token(self):
+        old_channel = YouTubeChannel.objects.create(
+            user=self.user,
+            youtube_channel_id="UC-old-channel",
+            title="Old Channel",
+            uploads_playlist_id="UU-old-channel",
+            encrypted_refresh_token=self._encrypted_token(),
+        )
+        from django.core import signing
+
+        state = signing.dumps(
+            {"user_id": self.user.id},
+            salt="youtube-channel-connect",
+            compress=True,
+        )
+
+        with self.assertRaises(ValidationError):
+            connect_youtube_channel(
+                code="oauth-code",
+                state=state,
+                redirect_uri="https://api.example.com/api/youtube/callback/",
+                youtube_client=FakeYouTubeClientWithoutRefreshToken(),
+            )
+
+        old_channel.refresh_from_db()
+        self.assertEqual(old_channel.youtube_channel_id, "UC-old-channel")
+
     def _encrypted_token(self):
         from .services import encrypt_refresh_token
 
@@ -403,3 +438,44 @@ class YouTubeAPITests(APITestCase):
         response = self.client.get(reverse("youtube-channel"))
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    @override_settings(
+        FRONTEND_YOUTUBE_REDIRECT_URL="https://www.example.com/channel"
+    )
+    def test_cancelled_authorization_redirects_to_channel_page(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get(
+            reverse("youtube-callback"),
+            {"error": "access_denied", "state": "signed-state"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(
+            response.url,
+            "https://www.example.com/channel?status=error",
+        )
+
+    @override_settings(
+        FRONTEND_YOUTUBE_REDIRECT_URL="https://www.example.com/channel"
+    )
+    @patch("youtube_channels.views.connect_youtube_channel")
+    def test_connection_validation_error_redirects_to_channel_page(
+        self,
+        mock_connect,
+    ):
+        mock_connect.side_effect = ValidationError(
+            {"youtube": "Authorization expired."}
+        )
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get(
+            reverse("youtube-callback"),
+            {"code": "oauth-code", "state": "signed-state"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(
+            response.url,
+            "https://www.example.com/channel?status=error",
+        )

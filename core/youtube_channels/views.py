@@ -53,17 +53,30 @@ class YouTubeCallbackAPIView(APIView):
     authentication_classes = []
 
     def get(self, request):
+        if request.query_params.get("error"):
+            return youtube_callback_error_response(
+                message="YouTube authorization was cancelled or denied."
+            )
+
         serializer = YouTubeCallbackSerializer(data=request.query_params)
-        serializer.is_valid(raise_exception=True)
 
         try:
+            serializer.is_valid(raise_exception=True)
             channel = connect_youtube_channel(
                 **serializer.validated_data,
                 redirect_uri=get_youtube_redirect_uri(request),
             )
         except ValidationError as exc:
+            if settings.FRONTEND_YOUTUBE_REDIRECT_URL:
+                return youtube_callback_error_response(
+                    message="YouTube authorization could not be completed."
+                )
             raise exc
         except Exception:
+            if settings.FRONTEND_YOUTUBE_REDIRECT_URL:
+                return youtube_callback_error_response(
+                    message="YouTube authorization could not be completed."
+                )
             return Response(
                 {"message": "Failed to connect YouTube channel."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -172,4 +185,18 @@ def add_query_parameters(url: str, params: dict[str, str]) -> str:
     query.update(params)
     return urlunsplit(
         (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
+def youtube_callback_error_response(*, message: str):
+    if settings.FRONTEND_YOUTUBE_REDIRECT_URL:
+        return redirect(
+            add_query_parameters(
+                settings.FRONTEND_YOUTUBE_REDIRECT_URL,
+                {"status": "error"},
+            )
+        )
+    return Response(
+        {"message": message},
+        status=status.HTTP_400_BAD_REQUEST,
     )

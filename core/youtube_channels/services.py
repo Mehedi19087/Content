@@ -145,10 +145,10 @@ def connect_youtube_channel(
         existing and existing.youtube_channel_id != channel_id
     )
     refresh_token = str(token_data.get("refresh_token") or "")
-    if not refresh_token and existing:
-        encrypted_refresh_token = existing.encrypted_refresh_token
-    elif refresh_token:
+    if refresh_token:
         encrypted_refresh_token = encrypt_refresh_token(refresh_token)
+    elif existing and not channel_changed:
+        encrypted_refresh_token = existing.encrypted_refresh_token
     else:
         raise ValidationError(
             {"youtube": "Google did not return offline access. Please connect again."}
