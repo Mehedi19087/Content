@@ -50,6 +50,7 @@ class ConnectedYouTubeClient:
             "scope": " ".join(YOUTUBE_SCOPES),
             "state": state,
             "access_type": "offline",
+            "include_granted_scopes": "true",
             "prompt": "consent select_account",
         }
         return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
@@ -98,7 +99,7 @@ class ConnectedYouTubeClient:
             f"{YOUTUBE_DATA_API_URL}/channels",
             access_token=access_token,
             params={
-                "part": "snippet,contentDetails,statistics",
+                "part": "snippet,contentDetails,statistics,topicDetails",
                 "mine": "true",
                 "maxResults": 1,
             },

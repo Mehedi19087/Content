@@ -1,5 +1,9 @@
 # Content Package Background Jobs
 
+For the creator DNA and shared competitor refresh jobs, see
+[COMPETITOR_INTELLIGENCE.md](COMPETITOR_INTELLIGENCE.md). These use the same
+worker and broker, plus Celery beat or an external scheduler for monitoring.
+
 Content-package generation runs in a Celery worker so the public HTTP request
 does not remain open while AI providers generate text and images.
 

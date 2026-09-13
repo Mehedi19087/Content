@@ -1,5 +1,9 @@
 # YouTube Packaging Studio - API Documentation
 
+For the creator DNA, shared niche intelligence, and cached personalized ideas
+endpoints under `/api/intelligence/`, see
+[Competitor Intelligence API and setup](COMPETITOR_INTELLIGENCE.md).
+
 ## Overview
 
 A Django REST Framework API backend for an AI-Powered YouTube Packaging Studio. It helps YouTube content creators generate SEO metadata, trending video ideas, and thumbnail concepts using DeepSeek and OpenAI image generation.

@@ -170,6 +170,10 @@ def connect_youtube_channel(
             )
             if channel_changed:
                 YouTubeChannelAnalysis.objects.filter(channel=channel).delete()
+                # An OAuth reconnect can replace the channel on this same row.
+                from intelligence.models import ChannelDNA
+
+                ChannelDNA.objects.filter(connection=channel).delete()
             return channel
     except IntegrityError as exc:
         raise ValidationError(
@@ -325,6 +329,7 @@ def normalize_channel_defaults(
     snippet = channel_data.get("snippet", {})
     details = channel_data.get("contentDetails", {})
     statistics = channel_data.get("statistics", {})
+    fetched_at = timezone.now()
     return {
         "title": str(snippet.get("title") or "YouTube channel"),
         "thumbnail_url": get_thumbnail_url(snippet),
@@ -337,6 +342,9 @@ def normalize_channel_defaults(
         "subscriber_count": parse_int(statistics.get("subscriberCount")),
         "video_count": parse_int(statistics.get("videoCount")),
         "view_count": parse_int(statistics.get("viewCount")),
+        "source": "youtube_oauth",
+        "fetched_at": fetched_at,
+        "expires_at": fetched_at + timedelta(days=1),
     }
 
 

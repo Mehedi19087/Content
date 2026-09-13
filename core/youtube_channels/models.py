@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class YouTubeChannel(models.Model):
@@ -28,6 +29,9 @@ class YouTubeChannel(models.Model):
     video_count = models.PositiveBigIntegerField(default=0)
     view_count = models.PositiveBigIntegerField(default=0)
     last_analyzed_at = models.DateTimeField(null=True, blank=True)
+    source = models.CharField(max_length=100, default="youtube_oauth")
+    fetched_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

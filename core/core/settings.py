@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'ideas',
     'users',
     'youtube_channels',
+    'intelligence',
     'billing',
 ]
 
@@ -316,6 +317,20 @@ CELERY_TASK_IGNORE_RESULT = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_CONNECTION_TIMEOUT = 5
 CELERY_TASK_PUBLISH_RETRY = False
+
+# Optional web context for niches with no useful YouTube competitors.
+INTELLIGENCE_WEB_SEARCH_API_KEY = os.getenv('INTELLIGENCE_WEB_SEARCH_API_KEY', '')
+INTELLIGENCE_POOL_REFRESH_HOURS = max(
+    12, int(os.getenv('INTELLIGENCE_POOL_REFRESH_HOURS', '24')),
+)
+
+# Run Celery beat, or invoke refresh_intelligence from an external scheduler.
+CELERY_BEAT_SCHEDULE = {
+    'refresh-due-intelligence': {
+        'task': 'intelligence.refresh_due_pools',
+        'schedule': 10800.0,
+    },
+}
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv('CELERY_TASK_SOFT_TIME_LIMIT', '420'))
 CELERY_TASK_TIME_LIMIT = int(os.getenv('CELERY_TASK_TIME_LIMIT', '450'))

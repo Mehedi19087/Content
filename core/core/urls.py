@@ -25,6 +25,7 @@ urlpatterns = [
     path('api/', include('ideas.urls')),
     path('api/auth/', include('users.urls')),
     path('api/', include('youtube_channels.urls')),
+    path('api/intelligence/', include('intelligence.urls')),
     path('api/', include('billing.urls')),
 ]
 
