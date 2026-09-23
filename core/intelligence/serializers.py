@@ -44,6 +44,8 @@ class PoolResponseSerializer(serializers.Serializer):
 
 
 class IdeasResponseSerializer(serializers.Serializer):
+    status = serializers.CharField(read_only=True)
+    message = serializers.CharField(read_only=True)
     ideas = serializers.ListField(child=serializers.DictField(), read_only=True)
     evidence_mode = serializers.CharField(read_only=True)
     data_timestamp = serializers.CharField(read_only=True, allow_null=True)

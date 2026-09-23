@@ -1,4 +1,3 @@
-from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -13,6 +12,7 @@ from .serializers import (
     UpdateDNASerializer,
 )
 from .tasks import queue_creator_analysis, queue_pool_refresh
+from .workflow_services import get_niche_pool
 
 
 class CreatorAnalysisAPIView(APIView):
@@ -44,10 +44,8 @@ class ChannelDNAAPIView(APIView):
 
 class NichePoolAPIView(APIView):
     def get(self, request):
-        dna = get_dna(user_id=request.user.pk)
-        if not dna.niche_pool_id:
-            raise NotFound("Confirm Channel DNA to select a niche pool.")
-        return Response({"data": PoolResponseSerializer(dna.niche_pool).data})
+        pool = get_niche_pool(user_id=request.user.pk)
+        return Response({"data": PoolResponseSerializer(pool).data})
 
 
 class GenerateIdeasAPIView(APIView):
@@ -55,4 +53,7 @@ class GenerateIdeasAPIView(APIView):
         serializer = GenerateIdeasSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         result = generate_ideas(user_id=request.user.pk, **serializer.validated_data)
-        return Response({"data": IdeasResponseSerializer(result).data}, status=201)
+        return Response(
+            {"data": IdeasResponseSerializer(result).data},
+            status=201 if result["ideas"] else 200,
+        )

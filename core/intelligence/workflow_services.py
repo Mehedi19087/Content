@@ -4,7 +4,7 @@ import logging
 
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, NotFound
 
 from youtube_channels.services import get_youtube_channel
 
@@ -27,6 +27,24 @@ def has_active_job(record, now):
         and record.refresh_requested_at
         and record.refresh_requested_at > now - timedelta(seconds=LEASE_SECONDS)
     )
+
+
+def get_niche_pool(user_id):
+    from .creator_services import get_dna
+
+    dna = get_dna(user_id=user_id)
+    if not dna.niche_pool_id:
+        raise NotFound("Confirm Channel DNA to select a niche pool.")
+    pool = dna.niche_pool
+    if pool.status in {"pending", "running"} and not has_active_job(pool, timezone.now()):
+        NichePool.objects.filter(
+            pk=pool.pk, status=pool.status, refresh_requested_at=pool.refresh_requested_at,
+        ).update(
+            status="failed", refresh_requested_at=None,
+            error_message="YouTube evidence collection timed out. Try again.",
+        )
+        pool.refresh_from_db()
+    return pool
 
 
 def queue_creator_analysis(*, user_id):
@@ -62,17 +80,21 @@ def queue_creator_analysis(*, user_id):
 
 def queue_pool_refresh(pool_id, *, rediscover=False):
     from .tasks import refresh_pool_task
+    from .services import discovery_due
 
     now = timezone.now()
     with transaction.atomic():
         pool = NichePool.objects.select_for_update().get(pk=pool_id)
         if has_active_job(pool, now):
             return "already_queued"
-        discovery_due = rediscover and (
-            pool.last_search_at is None
-            or pool.last_search_at <= now - timedelta(days=30)
+        should_discover = discovery_due(pool, now) and (
+            rediscover or not pool.memberships.filter(relevant=True).exists()
         )
-        if not discovery_due and pool.expires_at and pool.expires_at > now:
+        fresh = (
+            pool.expires_at and pool.expires_at > now
+            and pool.fetched_at > now - timedelta(hours=24)
+        )
+        if not should_discover and fresh:
             return "fresh"
         pool.refresh_requested_at = now
         pool.status = "pending"
@@ -81,7 +103,7 @@ def queue_pool_refresh(pool_id, *, rediscover=False):
     try:
         refresh_pool_task.apply_async(
             args=[pool_id],
-            kwargs={"rediscover": bool(discovery_due), "requested_at": now.isoformat()},
+            kwargs={"rediscover": bool(should_discover), "requested_at": now.isoformat()},
             retry=False,
         )
     except Exception:
@@ -112,14 +134,13 @@ def finish_creator_analysis(user_id, *, dna_id, requested_at, failed=False):
 
 
 def refresh_due_pools():
+    from .services import discovery_due
+
     now = timezone.now()
     results = {}
     pools = NichePool.objects.filter(creator_profiles__confirmed=True).distinct()
     for pool in pools.iterator():
-        discovery_due = (
-            pool.last_search_at is None
-            or pool.last_search_at <= now - timedelta(days=30)
-        )
-        if discovery_due or pool.expires_at is None or pool.expires_at <= now:
-            results[pool.pk] = queue_pool_refresh(pool.pk, rediscover=discovery_due)
+        should_discover = discovery_due(pool, now)
+        if should_discover or pool.expires_at is None or pool.expires_at <= now:
+            results[pool.pk] = queue_pool_refresh(pool.pk, rediscover=should_discover)
     return results

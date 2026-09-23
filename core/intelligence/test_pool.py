@@ -62,15 +62,15 @@ class NichePoolTests(TestCase):
 
     @patch("intelligence.services.web_client.search_context", return_value=[])
     @patch("intelligence.services.PublicYouTubeClient")
-    def test_monthly_rediscovery_requires_explicit_flag(self, client_class, web):
+    def test_empty_pool_recovers_after_one_day_without_explicit_flag(self, client_class, web):
         client = client_class.return_value
         client.search.return_value = []
         client.channels.return_value = []
         client.videos.return_value = []
-        self.pool.last_search_at = timezone.now() - timedelta(days=31)
+        self.pool.last_search_at = timezone.now() - timedelta(hours=25)
         self.pool.save()
         refresh_niche_pool(self.pool.pk)
-        client.search.assert_not_called()
+        client.search.assert_called_once_with("japan travel", language="bn", region="BD")
         refresh_niche_pool(self.pool.pk, rediscover=True)
         client.search.assert_called_once()
 
@@ -179,3 +179,22 @@ class NichePoolTests(TestCase):
         else:
             self.fail("Expected a sanitized provider error.")
         self.assertEqual(QuotaLedger.objects.get().search_calls, 1)
+
+    def test_missing_view_count_is_unavailable_not_zero(self):
+        store_channel(channel_item("missing"))
+        item = video_item("missing", 1)
+        for stats in ({}, {"viewCount": None}, {"viewCount": ""}, {"viewCount": "unknown"}):
+            item["statistics"] = stats
+            self.assertEqual(store_videos([item]), [])
+
+    def test_healthy_pool_keeps_monthly_discovery_cooldown(self):
+        from .models import NichePoolChannel
+        from .services import discovery_due
+
+        channel = store_channel(channel_item("healthy"))
+        NichePoolChannel.objects.create(pool=self.pool, channel=channel)
+        now = timezone.now()
+        self.pool.last_search_at = now - timedelta(days=2)
+        self.assertFalse(discovery_due(self.pool, now))
+        self.pool.last_search_at = now - timedelta(days=31)
+        self.assertTrue(discovery_due(self.pool, now))

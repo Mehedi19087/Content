@@ -97,6 +97,7 @@ class IntelligenceAPITests(APITestCase):
         self.assertEqual(queue_pool_refresh(pool.pk), "already_queued")
         self.assertEqual(dispatch.call_count, 1)
         pool.status = "succeeded"
+        pool.last_search_at = timezone.now()
         pool.refresh_requested_at = None
         pool.expires_at = timezone.now() + timedelta(hours=12)
         pool.save()
@@ -157,6 +158,7 @@ class IntelligenceAPITests(APITestCase):
         pool_dispatch.assert_called_once()
         NichePool.objects.filter(pk=pool_id).update(
             status="succeeded", expires_at=fresh_until, refresh_requested_at=None,
+            last_search_at=timezone.now(),
         )
 
         other_connection = YouTubeChannel.objects.create(
@@ -177,19 +179,27 @@ class IntelligenceAPITests(APITestCase):
         self.assertEqual(NichePool.objects.count(), 1)
         self.assertEqual(pool_dispatch.call_count, 1)
 
+        from .models import PublicChannel, NichePoolChannel, YouTubeVideo
+        competitor = PublicChannel.objects.create(youtube_channel_id="competitor", title="Travel")
+        NichePoolChannel.objects.create(pool_id=pool_id, channel=competitor)
+        YouTubeVideo.objects.create(
+            youtube_video_id="source-video", channel=competitor, title="Japan travel",
+            published_at=timezone.now() - timedelta(days=10), view_count=1234,
+            expires_at=fresh_until,
+        )
         llm_class.return_value.model = "test-model"
         llm_class.return_value.generate_json.return_value = {"ideas": [{
             "idea": "Plan your first Japan trip", "hook": "Start with a realistic budget",
             "why_this_fits_creator": "A practical guide for your audience",
             "why_now": "Evergreen planning question", "suggested_format": "guide",
             "suggested_video_length": "8 minutes", "risk": "Prices may change",
-            "supporting_video_ids": [],
+            "supporting_video_ids": ["source-video"],
         }]}
         response = self.client.post(reverse("intelligence-ideas"), {"count": 1}, format="json")
         self.assertEqual(response.status_code, 201, response.data)
         idea = response.data["data"]["ideas"][0]
-        self.assertEqual(idea["evidence_mode"], "AI_FALLBACK")
-        self.assertIn("YouTube trend evidence was not available", idea["evidence_message"])
+        self.assertEqual(idea["evidence_mode"], "LIMITED_EVIDENCE")
+        self.assertEqual(idea["supporting_videos"][0]["views"], 1234)
         saved = GeneratedIdea.objects.get()
         self.assertEqual(saved.dna.connection.user_id, self.other.pk)
         payload = llm_class.return_value.generate_json.call_args.kwargs["user_payload"]
@@ -226,3 +236,39 @@ class IntelligenceAPITests(APITestCase):
         dna.refresh_from_db()
         self.assertEqual(dna.status, "succeeded")
         self.assertIsNone(dna.refresh_requested_at)
+
+    def test_polling_stuck_evidence_collection_allows_retry(self):
+        pool = NichePool.objects.create(
+            identity="stuck", name="Travel", status="running",
+            refresh_requested_at=timezone.now() - timedelta(minutes=11),
+        )
+        ChannelDNA.objects.create(connection=self.connection, niche_pool=pool, confirmed=True)
+        response = self.client.get(reverse("intelligence-niche"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["status"], "failed")
+
+    @patch("intelligence.tasks.refresh_pool_task.apply_async")
+    @patch("intelligence.generation_services.DeepSeekClient")
+    def test_empty_evidence_response_does_not_generate_ai_suggestions(self, llm, dispatch):
+        pool = NichePool.objects.create(identity="empty", name="Travel")
+        ChannelDNA.objects.create(
+            connection=self.connection, niche_pool=pool, confirmed=True,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        response = self.client.post(reverse("intelligence-ideas"), {"count": 3}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["ideas"], [])
+        self.assertEqual(response.data["data"]["status"], "collecting_evidence")
+        llm.assert_not_called()
+        dispatch.assert_called_once()
+
+    @patch("intelligence.tasks.refresh_pool_task.apply_async")
+    def test_dormant_pool_refreshes_on_request_when_statistics_exceed_one_day(self, dispatch):
+        pool = NichePool.objects.create(
+            identity="dormant", name="Travel", status="succeeded",
+            fetched_at=timezone.now() - timedelta(hours=25),
+            expires_at=timezone.now() + timedelta(hours=47),
+            last_search_at=timezone.now(),
+        )
+        self.assertEqual(queue_pool_refresh(pool.pk), "queued")
+        dispatch.assert_called_once()

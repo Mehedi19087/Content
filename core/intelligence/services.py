@@ -103,6 +103,9 @@ def store_videos(items):
         duration = parse_duration(item.get("contentDetails", {}).get("duration", "PT0S"))
         seconds = max(0, int(duration.total_seconds())) if duration else 0
         stats = item.get("statistics", {})
+        if not str(stats.get("viewCount", "")).isdigit():
+            # Missing statistics are unavailable, not measured zero views.
+            continue
         count_fields = {
             "view_count": "viewCount", "like_count": "likeCount",
             "comment_count": "commentCount",
@@ -187,6 +190,14 @@ def _age_bucket(video, now):
     return "over-365d"
 
 
+def discovery_due(pool, now):
+    # Empty or failed discovery can recover tomorrow without spending a Search
+    # request on each page load. Healthy competitor pools keep monthly discovery.
+    has_channels = pool.memberships.filter(relevant=True).exists()
+    cooldown = timedelta(days=30 if has_channels else 1)
+    return pool.last_search_at is None or pool.last_search_at <= now - cooldown
+
+
 def calculate_signals(pool, channels):
     now = timezone.now()
     signals = []
@@ -265,15 +276,19 @@ def refresh_niche_pool(pool_id, rediscover=False, expected_requested_at=None):
         pool.status = "running"
         pool.refresh_requested_at = now
         pool.error_message = ""
-        do_search = pool.last_search_at is None or (
-            rediscover and pool.last_search_at <= now - timedelta(days=30)
+        do_search = discovery_due(pool, now) and (
+            rediscover or not pool.memberships.filter(relevant=True).exists()
         )
         if do_search:
             pool.last_search_at = now
         pool.save()
     client = PublicYouTubeClient(pool)
     try:
-        query = " ".join(dict.fromkeys(" ".join(pool.definition.values()).split()))[:500]
+        # Audience, format and intent are relevance context, not search keywords.
+        # Passing the entire profile to q can eliminate every useful result.
+        query = pool.definition.get("topic", "").strip()[:200]
+        if not query:
+            raise ValueError("A channel topic is required for YouTube discovery.")
         if do_search:
             language = _language_code(pool.definition.get("language", ""))
             geography = pool.definition.get("geography", "")
@@ -350,7 +365,7 @@ def refresh_niche_pool(pool_id, rediscover=False, expected_requested_at=None):
         cadence = getattr(settings, "INTELLIGENCE_POOL_REFRESH_HOURS", 24)
         if "breaking news" in pool.definition.get("topic", ""):
             cadence = 6
-        elif not any(channel.videos.filter(
+        elif selected and not any(channel.videos.filter(
             published_at__gte=now - timedelta(days=90)
         ).exists() for channel in selected):
             cadence = 72
