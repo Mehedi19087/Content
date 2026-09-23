@@ -104,8 +104,16 @@ database row. No private analytics are placed in the niche definition.
 
 Discovery reserves the Search attempt before making the request. Empty or failed discovery can retry after 24 hours; healthy pools retain the
 30-day rediscovery interval. Repeated requests within that cooldown do not repeat Search.
-The search query uses only the reviewed topic; audience and format are not appended.
-Language and region are passed as API parameters. Monitoring uses uploads
+Discovery v3 splits the reviewed topic on subject boundaries (commas, "and", etc.)
+into up to four phrases and combines them with the official Search OR operator.
+Language and region are API parameters; supported non-English languages also
+add a readable language term to each subject (for example, "programming bangla"); results are restricted to the last 180 days.
+Videos need to match one subject, not half of an entire multi-subject profile.
+An explicit mismatched audio language excludes a video; channel metadata language
+alone does not. Search hits are validated with videos.list even if absent from the
+latest uploads. Up to ten candidates are inspected and five channels retained.
+A single relevant official video may provide limited evidence; it does not establish
+high demand or a channel-relative outlier. Monitoring uses uploads
 playlists and batched video metadata/statistics. Candidate validation and web
 fallback may use additional ordinary Data API requests, so quota estimates are
 not guaranteed fixed totals; the ledger records actual attempted operations.
@@ -177,8 +185,9 @@ Official API references:
 ## Evidence-first deployment
 
 Deploy the backend and `creator-intent` frontend together, and restart the Celery
-worker to load the new collection code. No schema migration or new secret is
-required by this change. The frontend uses a new session cache version and refuses
+worker to load the new collection code. Apply migration `intelligence.0002_add_collection_summary` before deploying the
+new web and worker processes. It adds an additive JSON diagnostics column; no new
+secret is required. The frontend uses a new session cache version and refuses
 legacy AI-only or expired ideas. Keep the worker, Redis and scheduler running.
 After deployment, confirm a narrow channel topic, check collection completes,
 and generate ideas. Open source links and compare the shown views and collection
@@ -189,3 +198,18 @@ The official Data API does not provide market-wide search volume. Channel-owned
 Analytics search terms describe traffic to that channel, not the whole market.
 AI relevance judgements and the age-cohort outlier heuristic are not guarantees
 of audience demand or future views. Empty evidence is a valid result.
+
+### Discovery diagnostics and recovery
+
+Empty legacy pools get one immediate v3 discovery attempt on the next generation
+request or scheduler run. The version and Search reservation are saved together
+before calling YouTube, so failures cannot cause unlimited retries. Subsequent
+empty searches retain the one-day cooldown. A skipped collection does not advance
+its evidence timestamp. `refresh_status: "discovery_cooldown"` means no job was queued.
+
+`GET /api/intelligence/niche/` now includes `collection_summary` with search result,
+selected channel and eligible video counts, subject phrases, search query, and
+outcome. It also returns `next_discovery_at` (null when discovery is already due).
+Worker logs emit `intelligence.collection_started`, `collection_completed`, or
+`collection_skipped`, including counts and a reason. A Celery "succeeded" line alone
+only means the task completed, not that evidence was found.

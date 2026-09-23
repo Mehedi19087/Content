@@ -1,6 +1,8 @@
 """Shared niche collection, with one persistent discovery reservation."""
 import hashlib
 import json
+import logging
+import re
 import statistics
 import unicodedata
 from collections import Counter, defaultdict
@@ -17,6 +19,10 @@ from .models import (
     PublicChannel, TrendSignal, VideoStatSnapshot, YouTubeVideo,
 )
 from .youtube_client import PublicYouTubeClient
+
+
+logger = logging.getLogger(__name__)
+DISCOVERY_VERSION = "niche-discovery-v3"
 
 
 def _text(value):
@@ -133,14 +139,37 @@ def store_videos(items):
     return stored
 
 
-def _matches(pool, text):
-    topic = pool.definition.get("topic", pool.definition.get("core_topic", ""))
-    stop_words = {
-        "and", "the", "for", "with", "video", "videos", "content", "guide", "vlog",
+def search_topics(pool):
+    # Keep reviewed subject boundaries that canonical normalization removes.
+    profile = pool.creator_profiles.filter(confirmed=True).values_list("profile", flat=True).first()
+    topic = (profile or {}).get("core_topic") or pool.definition.get("topic", "")
+    parts = re.split(r"[,;/&]|\band\b", topic, flags=re.IGNORECASE)
+    ignored = {
+        "bangla", "bengali", "english", "language", "education", "educational",
+        "concepts", "fundamentals", "tutorials", "tutorial", "content", "and", "the",
     }
-    tokens = set(_text(topic).split()) - stop_words
-    matches = len(tokens & set(_text(text).split()))
-    return bool(tokens and matches >= max(1, (len(tokens) + 1) // 2))
+    subjects = []
+    for part in parts:
+        words = [word for word in _text(part).split() if word not in ignored]
+        if words:
+            subject = " ".join(words[:6])
+            if subject not in subjects:
+                subjects.append(subject)
+    return subjects[:4] or [_text(topic)[:100]]
+
+
+def _matches(pool, text):
+    topics = pool.collection_summary.get("topics") or [
+        pool.definition.get("topic", pool.definition.get("core_topic", "")),
+    ]
+    stop_words = {"and", "the", "for", "with", "video", "videos", "content", "guide", "vlog"}
+    words = set(_text(text).split())
+    for topic in topics:
+        tokens = set(_text(topic).split()) - stop_words
+        required = min(len(tokens), max(2, (len(tokens) + 1) // 2))
+        if tokens and len(tokens & words) >= required:
+            return True
+    return False
 
 
 def _language_code(value):
@@ -152,12 +181,17 @@ def _language_code(value):
 
 
 def video_matches_niche(pool, video):
+    expected = _language_code(pool.definition.get("language", ""))
+    # Channel defaultLanguage is often English even for Bangla audio. Only an
+    # explicit audio language can reject a video; metadata language is not audio.
+    audio = video.metadata.get("snippet", {}).get("defaultAudioLanguage", "")
+    if expected and audio and audio.split("-")[0].lower() != expected:
+        return False
     return _matches(pool, video.title + " " + video.description)
 
 
 def _candidate_channels(client, pool, ids):
     channels = []
-    expected = _language_code(pool.definition.get("language", ""))
     own_channels = set(pool.creator_profiles.values_list(
         "connection__youtube_channel_id", flat=True,
     ))
@@ -165,8 +199,7 @@ def _candidate_channels(client, pool, ids):
         if item.get("id") in own_channels:
             continue
         channel = store_channel(item)
-        actual = channel.language.split("-")[0].lower()
-        if channel.uploads_playlist_id and not (expected and actual and expected != actual):
+        if channel.uploads_playlist_id:
             channels.append(channel)
     return channels
 
@@ -194,6 +227,8 @@ def discovery_due(pool, now):
     # Empty or failed discovery can recover tomorrow without spending a Search
     # request on each page load. Healthy competitor pools keep monthly discovery.
     has_channels = pool.memberships.filter(relevant=True).exists()
+    if not has_channels and pool.calculation_version != DISCOVERY_VERSION:
+        return True
     cooldown = timedelta(days=30 if has_channels else 1)
     return pool.last_search_at is None or pool.last_search_at <= now - cooldown
 
@@ -279,14 +314,32 @@ def refresh_niche_pool(pool_id, rediscover=False, expected_requested_at=None):
         do_search = discovery_due(pool, now) and (
             rediscover or not pool.memberships.filter(relevant=True).exists()
         )
+        if not do_search and not pool.memberships.filter(relevant=True).exists():
+            pool.status = "succeeded"
+            pool.refresh_requested_at = None
+            pool.save(update_fields=["status", "refresh_requested_at"])
+            logger.info("intelligence.collection_skipped pool_id=%s reason=discovery_cooldown", pool.pk)
+            return pool
         if do_search:
             pool.last_search_at = now
+            # Reserve the version with the attempt, including failed requests.
+            pool.calculation_version = DISCOVERY_VERSION
         pool.save()
     client = PublicYouTubeClient(pool)
     try:
         # Audience, format and intent are relevance context, not search keywords.
         # Passing the entire profile to q can eliminate every useful result.
-        query = pool.definition.get("topic", "").strip()[:200]
+        topics = search_topics(pool)
+        language = _language_code(pool.definition.get("language", ""))
+        language_terms = {"bn": "bangla", "hi": "hindi", "ja": "japanese", "es": "spanish"}
+        language_term = language_terms.get(language, "")
+        query = "|".join(" ".join(filter(None, [topic, language_term])) for topic in topics)
+        pool.collection_summary = {
+            "topics": topics, "search_query": query,
+            "discovery_performed": do_search, "search_results": 0,
+            "candidate_channels": 0, "selected_channels": 0, "eligible_videos": 0,
+        }
+        logger.info("intelligence.collection_started pool_id=%s discover=%s query=%s", pool.pk, do_search, query)
         if not query:
             raise ValueError("A channel topic is required for YouTube discovery.")
         if do_search:
@@ -297,15 +350,30 @@ def refresh_niche_pool(pool_id, rediscover=False, expected_requested_at=None):
                 geography, geography.upper() if len(geography) == 2 else "",
             )
             found = client.search(query, language=language, region=region)
+            pool.collection_summary["search_results"] = len(found)
             scores = Counter()
             for item in found:
                 snippet = item.get("snippet", {})
                 text = snippet.get("title", "") + " " + snippet.get("description", "")
                 if _matches(pool, text) and snippet.get("channelId"):
                     scores[snippet["channelId"]] += 1
+            search_ids = [item.get("id", {}).get("videoId") for item in found]
+            search_ids = [value for value in search_ids if value]
+            search_videos = client.videos(search_ids)
+            if search_ids:
+                allowed_channels = set()
+                for item in search_videos:
+                    snippet = item.get("snippet", {})
+                    audio = snippet.get("defaultAudioLanguage", "").split("-")[0].lower()
+                    if not language or not audio or audio == language:
+                        allowed_channels.add(snippet.get("channelId"))
+                scores = Counter({key: value for key, value in scores.items() if key in allowed_channels})
             selected = _candidate_channels(
                 client, pool, [key for key, _ in scores.most_common()],
-            )[:5]
+            )[:10]
+            pool.collection_summary["candidate_channels"] = len(selected)
+            # Search hits may no longer be in a busy channel's latest 50 uploads.
+            store_videos(search_videos)
         else:
             memberships = pool.memberships.filter(
                 relevant=True,
@@ -330,11 +398,12 @@ def refresh_niche_pool(pool_id, rediscover=False, expected_requested_at=None):
 
         def useful(channel):
             recent = channel.videos.filter(
-                published_at__gte=now - timedelta(days=180), fetched_at__gte=now,
+                published_at__gte=now - timedelta(days=180), published_at__lte=now,
+                fetched_at__gte=now,
             )
-            return sum(video_matches_niche(pool, video) for video in recent) >= 2
+            return any(video_matches_niche(pool, video) for video in recent)
 
-        selected = [channel for channel in selected if useful(channel)]
+        selected = [channel for channel in selected if useful(channel)][:5]
         if not selected and do_search:
             try:
                 pool.web_context = web_client.search_context(query)
@@ -352,6 +421,17 @@ def refresh_niche_pool(pool_id, rediscover=False, expected_requested_at=None):
             _load_uploads(client, fallback)
             selected = [channel for channel in fallback if useful(channel)]
         count = len(selected)
+        eligible = sum(
+            video_matches_niche(pool, video)
+            for video in YouTubeVideo.objects.filter(
+                channel__in=selected, fetched_at__gte=now,
+                published_at__gte=now - timedelta(days=180), published_at__lte=now,
+            )
+        )
+        pool.collection_summary.update({
+            "selected_channels": count, "eligible_videos": eligible,
+            "outcome": "evidence_collected" if eligible else "no_matching_videos",
+        })
         if count >= 3:
             pool.evidence_mode = EvidenceMode.EVIDENCE_BACKED
             pool.confidence = 0.75
@@ -385,11 +465,17 @@ def refresh_niche_pool(pool_id, rediscover=False, expected_requested_at=None):
             pool.status = "succeeded"
             pool.refresh_requested_at = None
             pool.save()
+        logger.info(
+            "intelligence.collection_completed pool_id=%s search_results=%s channels=%s videos=%s outcome=%s",
+            pool.pk, pool.collection_summary["search_results"], count, eligible,
+            pool.collection_summary["outcome"],
+        )
         return pool
     except Exception:
         NichePool.objects.filter(pk=pool.pk).update(
             status="failed",
-            error_message="Niche refresh failed. Existing evidence remains available.",
+            error_message="YouTube evidence collection failed. Check worker logs for the provider error.",
+            collection_summary={**pool.collection_summary, "outcome": "provider_error"},
             refresh_requested_at=None,
         )
         raise

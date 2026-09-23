@@ -70,7 +70,7 @@ class NichePoolTests(TestCase):
         self.pool.last_search_at = timezone.now() - timedelta(hours=25)
         self.pool.save()
         refresh_niche_pool(self.pool.pk)
-        client.search.assert_called_once_with("japan travel", language="bn", region="BD")
+        client.search.assert_called_once_with("japan travel bangla", language="bn", region="BD")
         refresh_niche_pool(self.pool.pk, rediscover=True)
         client.search.assert_called_once()
 
@@ -112,7 +112,7 @@ class NichePoolTests(TestCase):
             1)[0], int(value.rsplit("-", 1)[1]), 1000 if value.endswith("-3") else 100) for value in values]
         result = refresh_niche_pool(self.pool.pk)
         self.assertEqual(result.memberships.filter(relevant=True).count(), 5)
-        self.assertEqual(client.uploads.call_count, 5)
+        self.assertEqual(client.uploads.call_count, 7)
         self.assertEqual(result.evidence_mode, EvidenceMode.EVIDENCE_BACKED)
         self.assertEqual(result.signals.count(), 5)
         refresh_niche_pool(self.pool.pk)
@@ -120,14 +120,14 @@ class NichePoolTests(TestCase):
 
     @patch("intelligence.services.web_client.search_context", return_value=[])
     @patch("intelligence.services.PublicYouTubeClient")
-    def test_single_related_video_does_not_validate_channel(self, client_class, web_search):
+    def test_single_official_related_video_provides_limited_evidence(self, client_class, web_search):
         client = client_class.return_value
         client.search.return_value = [{"snippet": {"channelId": "c", "title": "Japan travel"}}]
         client.channels.side_effect = lambda ids: [channel_item("c")] if ids else []
         client.uploads.return_value = [{"contentDetails": {"videoId": "c-1"}}]
         client.videos.side_effect = lambda ids: [video_item("c", 1)] if ids else []
         result = refresh_niche_pool(self.pool.pk)
-        self.assertEqual(result.evidence_mode, EvidenceMode.AI_FALLBACK)
+        self.assertEqual(result.evidence_mode, EvidenceMode.LIMITED_EVIDENCE)
 
     def test_baseline_excludes_target_and_separates_age_and_duration(self):
         channel = store_channel(channel_item("c"))
@@ -198,3 +198,72 @@ class NichePoolTests(TestCase):
         self.assertFalse(discovery_due(self.pool, now))
         self.pool.last_search_at = now - timedelta(days=31)
         self.assertTrue(discovery_due(self.pool, now))
+
+    def test_subject_matching_does_not_require_all_creator_topics(self):
+        from .services import _matches
+
+        self.pool.collection_summary = {"topics": [
+            "programming", "software development", "computer science", "ai tools",
+        ]}
+        self.assertTrue(_matches(self.pool, "Learn programming with Python"))
+        self.assertTrue(_matches(self.pool, "Useful AI tools for students"))
+        self.assertFalse(_matches(self.pool, "Cooking pasta in Italy"))
+        self.assertFalse(_matches(self.pool, "Garden tools for sale"))
+
+    @patch("intelligence.services.web_client.search_context", return_value=[])
+    @patch("intelligence.services.PublicYouTubeClient")
+    def test_new_discovery_version_recovers_legacy_empty_pool_immediately(self, client_class, web):
+        client = client_class.return_value
+        client.search.return_value = []
+        client.channels.return_value = []
+        client.videos.return_value = []
+        self.pool.last_search_at = timezone.now()
+        self.pool.save()
+        result = refresh_niche_pool(self.pool.pk)
+        self.assertEqual(result.calculation_version, "niche-discovery-v3")
+        self.assertEqual(result.collection_summary["outcome"], "no_matching_videos")
+        collected = result.fetched_at
+        result = refresh_niche_pool(self.pool.pk)
+        self.assertEqual(result.fetched_at, collected)
+        client.search.assert_called_once()
+
+    @patch("intelligence.services.PublicYouTubeClient")
+    def test_search_hit_outside_latest_uploads_is_kept_and_channel_metadata_language_is_not_audio(self, client_class):
+        client = client_class.return_value
+        client.search.return_value = [{"id": {"videoId": "c-1"}, "snippet": {
+            "channelId": "c", "title": "Japan travel",
+        }}]
+        channel = channel_item("c")
+        channel["snippet"]["defaultLanguage"] = "en"
+        client.channels.return_value = [channel]
+        client.uploads.return_value = []
+        video = video_item("c", 1)
+        video["snippet"]["defaultAudioLanguage"] = "bn"
+        client.videos.side_effect = lambda ids: [video] if "c-1" in ids else []
+        result = refresh_niche_pool(self.pool.pk)
+        self.assertEqual(result.collection_summary["eligible_videos"], 1)
+        self.assertEqual(result.evidence_mode, EvidenceMode.LIMITED_EVIDENCE)
+
+    def test_explicit_wrong_audio_language_is_excluded(self):
+        from .services import video_matches_niche
+
+        store_channel(channel_item("c"))
+        item = video_item("c", 1)
+        item["snippet"]["defaultAudioLanguage"] = "en"
+        video = store_videos([item])[0]
+        self.assertFalse(video_matches_niche(self.pool, video))
+
+    def test_reviewed_comma_separated_topic_becomes_focused_search_subjects(self):
+        from django.contrib.auth import get_user_model
+        from youtube_channels.models import YouTubeChannel
+        from .models import ChannelDNA
+        from .services import search_topics
+
+        user = get_user_model().objects.create_user(username="topics")
+        connection = YouTubeChannel.objects.create(user=user, youtube_channel_id="owner")
+        ChannelDNA.objects.create(connection=connection, confirmed=True, niche_pool=self.pool,
+            profile={"core_topic": "Bangla-language programming, software development, "
+                     "computer science concepts, and AI tools education."})
+        self.assertEqual(search_topics(self.pool), [
+            "programming", "software development", "computer science", "ai tools",
+        ])

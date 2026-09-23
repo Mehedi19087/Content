@@ -162,6 +162,11 @@ def generate_ideas(*, user_id, count=5, llm_client=None):
         if pool and refresh_status == "not_needed":
             refresh_status = _queue_refresh(pool.pk)
         pending = refresh_status in {"queued", "already_queued"}
+        if refresh_status == "discovery_cooldown":
+            return empty_result(
+                "The latest YouTube search did not find matching video evidence. "
+                "Review your channel topic or retry after the next discovery time shown above."
+            )
         return empty_result(
             "Collecting official YouTube video evidence. Try again when collection finishes."
             if pending else

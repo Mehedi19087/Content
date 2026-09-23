@@ -38,6 +38,7 @@ class NichePool(DerivedRecord):
     last_search_at = models.DateTimeField(null=True, blank=True)
     refresh_requested_at = models.DateTimeField(null=True, blank=True)
     web_context = models.JSONField(default=list, blank=True)
+    collection_summary = models.JSONField(default=dict, blank=True)
 
 
 class PublicChannel(SourcedRecord):

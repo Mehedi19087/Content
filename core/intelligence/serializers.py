@@ -33,6 +33,8 @@ class DNAResponseSerializer(serializers.Serializer):
 
 
 class PoolResponseSerializer(serializers.Serializer):
+    collection_summary = serializers.JSONField(read_only=True)
+    next_discovery_at = serializers.DateTimeField(read_only=True, allow_null=True)
     id = serializers.IntegerField(read_only=True)
     name = serializers.CharField(read_only=True)
     status = serializers.CharField(read_only=True)

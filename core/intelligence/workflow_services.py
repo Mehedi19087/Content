@@ -31,6 +31,7 @@ def has_active_job(record, now):
 
 def get_niche_pool(user_id):
     from .creator_services import get_dna
+    from .services import discovery_due
 
     dna = get_dna(user_id=user_id)
     if not dna.niche_pool_id:
@@ -44,6 +45,10 @@ def get_niche_pool(user_id):
             error_message="YouTube evidence collection timed out. Try again.",
         )
         pool.refresh_from_db()
+    pool.next_discovery_at = None
+    if not discovery_due(pool, timezone.now()):
+        days = 30 if pool.memberships.filter(relevant=True).exists() else 1
+        pool.next_discovery_at = pool.last_search_at + timedelta(days=days)
     return pool
 
 
@@ -90,6 +95,8 @@ def queue_pool_refresh(pool_id, *, rediscover=False):
         should_discover = discovery_due(pool, now) and (
             rediscover or not pool.memberships.filter(relevant=True).exists()
         )
+        if not should_discover and not pool.memberships.filter(relevant=True).exists():
+            return "discovery_cooldown"
         fresh = (
             pool.expires_at and pool.expires_at > now
             and pool.fetched_at > now - timedelta(hours=24)

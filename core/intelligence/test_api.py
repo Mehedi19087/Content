@@ -98,10 +98,11 @@ class IntelligenceAPITests(APITestCase):
         self.assertEqual(dispatch.call_count, 1)
         pool.status = "succeeded"
         pool.last_search_at = timezone.now()
+        pool.calculation_version = "niche-discovery-v3"
         pool.refresh_requested_at = None
         pool.expires_at = timezone.now() + timedelta(hours=12)
         pool.save()
-        self.assertEqual(queue_pool_refresh(pool.pk), "fresh")
+        self.assertEqual(queue_pool_refresh(pool.pk), "discovery_cooldown")
         self.assertEqual(dispatch.call_count, 1)
 
     @patch("intelligence.tasks.refresh_pool_task.apply_async", side_effect=OSError)
@@ -158,7 +159,7 @@ class IntelligenceAPITests(APITestCase):
         pool_dispatch.assert_called_once()
         NichePool.objects.filter(pk=pool_id).update(
             status="succeeded", expires_at=fresh_until, refresh_requested_at=None,
-            last_search_at=timezone.now(),
+            last_search_at=timezone.now(), calculation_version="niche-discovery-v3",
         )
 
         other_connection = YouTubeChannel.objects.create(
@@ -175,7 +176,7 @@ class IntelligenceAPITests(APITestCase):
         }, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["data"]["niche_pool_id"], pool_id)
-        self.assertEqual(response.data["refresh_status"], "fresh")
+        self.assertEqual(response.data["refresh_status"], "discovery_cooldown")
         self.assertEqual(NichePool.objects.count(), 1)
         self.assertEqual(pool_dispatch.call_count, 1)
 
@@ -272,3 +273,17 @@ class IntelligenceAPITests(APITestCase):
         )
         self.assertEqual(queue_pool_refresh(pool.pk), "queued")
         dispatch.assert_called_once()
+
+    def test_niche_status_explains_empty_collection_and_next_search_time(self):
+        searched = timezone.now()
+        pool = NichePool.objects.create(
+            identity="diagnostics", name="Travel", status="succeeded",
+            last_search_at=searched, calculation_version="niche-discovery-v3",
+            collection_summary={"search_results": 12, "eligible_videos": 0,
+                                "outcome": "no_matching_videos"},
+        )
+        ChannelDNA.objects.create(connection=self.connection, niche_pool=pool, confirmed=True)
+        response = self.client.get(reverse("intelligence-niche"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["collection_summary"]["search_results"], 12)
+        self.assertIsNotNone(response.data["data"]["next_discovery_at"])

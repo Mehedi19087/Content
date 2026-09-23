@@ -1,5 +1,7 @@
 """Small public Data API client. Each attempted request is accounted once."""
 import requests
+from datetime import timedelta
+from django.utils import timezone
 from django.conf import settings
 
 from .models import QuotaLedger
@@ -32,7 +34,8 @@ class PublicYouTubeClient:
 
     def search(self, query, language="", region=""):
         params = {"q": query, "type": "video", "part": "snippet", "maxResults": 50,
-            "order": "relevance"}
+            "order": "relevance",
+            "publishedAfter": (timezone.now() - timedelta(days=180)).isoformat()}
         if language:
             params["relevanceLanguage"] = language
         if region:
