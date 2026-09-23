@@ -218,8 +218,11 @@ only means the task completed, not that evidence was found.
 ## Idea relevance and language checks
 
 Generation v3 uses two bounded LLM calls: drafting, then a separate batched citation
-review. Drafting starts from the subjects in public video titles. Creator history
-only informs personalization; it cannot establish market evidence. The review sees
+review. Drafting starts from the subjects in public video titles. Only a whitelist
+of channel preferences (topic, audience, language, region, formats, presentation,
+intent and direction) personalizes the request. Raw private performance history
+and inferred winning-topic narratives are excluded from the drafting context.
+The review sees
 candidate prose and the cited titles, not the raw private analytics. It must confirm
 precise topic and entity matches, return a real excerpt of each accepted title, and
 reject unsupported current-demand claims. The backend validates the review shape,
@@ -270,3 +273,34 @@ are not logged. The reviewer sees only prose intended for display: model-written
 supplies that field from evidence. Short, exact title quotes are allowed when the
 semantic reviewer also approves the topic and entities. Unmatched citations,
 language problems, and unsupported demand claims still fail closed.
+
+
+### Citation contamination fix
+
+A live reproduction found three drafts citing only IDs from the creator's private
+upload history, with zero IDs from the nine eligible public videos. The private
+performance summary was approximately 85 KB versus 5 KB of public evidence. The
+backend correctly rejected these drafts before citation review; repeating the same
+request did not correct the competing source context.
+
+The drafting request now includes `creator_preferences` instead of the complete
+Channel DNA and `private_performance_summary`. Only eligible public video records
+supply citation IDs. This preserves language/audience/format personalization without
+asking the model to distinguish two competing video catalogs. Creator analytics
+remain stored for channel analysis; they are not sent to the idea drafter. Existing
+source ownership, freshness, entity, language and independent review checks remain.
+The `intelligence` logger is enabled at INFO in the web process so generation
+outcomes are visible in web service logs, alongside collection logs in the worker.
+No database migration, new environment variable or frontend change is required.
+
+Live verification also exposed an HTTP 400 from the review provider: JSON-output
+mode requires the prompt to explicitly contain “JSON”; the review prompt now does.
+The synchronous idea workflow explicitly disables extended thinking on its
+DeepSeek client, avoiding the provider's default high-effort reasoning mode that
+hit the 60-second review timeout. Other DeepSeek workflows retain their existing
+provider defaults. See [DeepSeek thinking controls](https://api-docs.deepseek.com/guides/thinking_mode/).
+
+After these fixes, a live run using the same nine-video pool returned three drafts,
+three review-approved ideas, and zero rejections. Model call durations were 4.65s
+and 1.77s. The diagnostic run rolled back generated rows; timings are observations,
+not guaranteed response times. Automated tests still mock all external requests.

@@ -21,9 +21,11 @@ class DeepSeekClient:
         api_key: str | None = None,
         model: str | None = None,
         timeout_seconds: int | None = None,
+        thinking_enabled: bool | None = None,
     ):
         self.api_key = api_key or settings.DEEPSEEK_API_KEY
         self.model = model or settings.DEEPSEEK_MODEL
+        self.thinking_enabled = thinking_enabled
         self.timeout_seconds = (
             settings.DEEPSEEK_TIMEOUT_SECONDS
             if timeout_seconds is None
@@ -55,6 +57,10 @@ class DeepSeekClient:
                 {"role": "user", "content": json.dumps(user_payload)},
             ],
         }
+        if self.thinking_enabled is not None:
+            request_payload["thinking"] = {
+                "type": "enabled" if self.thinking_enabled else "disabled",
+            }
         body = json.dumps(request_payload).encode("utf-8")
         request = urllib.request.Request(
             DEEPSEEK_CHAT_COMPLETIONS_URL,

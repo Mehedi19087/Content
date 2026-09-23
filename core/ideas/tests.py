@@ -68,6 +68,21 @@ class DeepSeekClientTestCase(APITestCase):
         self.assertEqual(request_body["model"], "deepseek-v4-flash")
         self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 25)
         self.assertEqual(result, {"ideas": []})
+        self.assertNotIn("thinking", request_body)
+
+    @patch("ideas.deepseek_client.urllib.request.urlopen")
+    def test_synchronous_json_can_explicitly_disable_extended_thinking(self, mock_urlopen):
+        response = MagicMock()
+        response.read.return_value = json.dumps({
+            "choices": [{"message": {"content": json.dumps({"reviews": []})}}],
+        }).encode()
+        mock_urlopen.return_value.__enter__.return_value = response
+        DeepSeekClient(api_key="test-key", thinking_enabled=False).generate_json(
+            system_prompt="Review citations and return JSON.", user_payload={},
+        )
+        body = json.loads(mock_urlopen.call_args.args[0].data)
+        self.assertEqual(body["thinking"], {"type": "disabled"})
+        self.assertEqual(body["response_format"], {"type": "json_object"})
 
     @override_settings(DEEPSEEK_API_KEY="", DEEPSEEK_MODEL="deepseek-v4-flash")
     def test_client_requires_deepseek_api_key(self):

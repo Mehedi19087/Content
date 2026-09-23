@@ -80,6 +80,11 @@ LOGGING = {
         },
     },
     "loggers": {
+        "intelligence": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "ideas.performance": {
             "handlers": ["console"],
             "level": "INFO",

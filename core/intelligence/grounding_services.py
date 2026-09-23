@@ -19,7 +19,7 @@ and claims that current demand is high/rising/viral without time-series evidence
 A creative format change on the SAME subject is allowed. Mere category overlap is not.
 Check that prose uses the requested language, allowing English technical/product
 names in Bangla. Reject stray Korean or other unrelated languages. Do not rewrite.
-Return {"reviews": [{"idea_index": integer, "language_ok": boolean,
+Return a JSON object: {"reviews": [{"idea_index": integer, "language_ok": boolean,
 "unsupported_demand_claims": boolean, "sources": [{"video_id": string,
 "same_topic": boolean, "same_entities": boolean, "title_quote": string}]}]}.
 Return one review per candidate. For each accepted source, title_quote must be an

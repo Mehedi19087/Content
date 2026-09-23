@@ -210,7 +210,10 @@ class IntelligenceAPITests(APITestCase):
         saved = GeneratedIdea.objects.get()
         self.assertEqual(saved.dna.connection.user_id, self.other.pk)
         payload = llm_class.return_value.generate_json.call_args_list[0].kwargs["user_payload"]
-        self.assertEqual(payload["private_performance_summary"], {"private_marker": "second-creator"})
+        self.assertNotIn("private_performance_summary", payload)
+        self.assertNotIn("second-creator", str(payload))
+        self.assertEqual(payload["creator_preferences"]["core_topic"], profile["core_topic"])
+        llm_class.assert_called_once_with(thinking_enabled=False)
         self.assertEqual(llm_class.return_value.generate_json.call_count, 2)
         creator_dispatch.assert_not_called()
         http_get.assert_not_called()

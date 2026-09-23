@@ -104,7 +104,8 @@ class CachedGenerationTests(TestCase):
         result = self.generate()
         self.assertEqual(self.llm.generate_json.call_count, 2)
         payload = self.llm.generate_json.call_args_list[0].kwargs["user_payload"]
-        self.assertEqual(payload["private_performance_summary"], {"private": "owner-data"})
+        self.assertNotIn("private_performance_summary", payload)
+        self.assertNotIn("owner-data", str(payload))
         self.assertNotIn("do-not-share", str(payload))
         self.assertEqual(result["ideas"][0]["evidence_mode"], "LIMITED_EVIDENCE")
         self.assertEqual(GeneratedIdea.objects.get().dna_id, self.dna.pk)
@@ -319,6 +320,8 @@ class CachedGenerationTests(TestCase):
         self.support(self.add_video(1))
         self.generate()
         review_payload = self.llm.generate_json.call_args_list[1].kwargs["user_payload"]
+        review_prompt = self.llm.generate_json.call_args_list[1].kwargs["system_prompt"]
+        self.assertIn("json", review_prompt.lower())  # Required by provider JSON mode.
         self.assertNotIn("owner-data", str(review_payload))
         self.assertNotIn("do-not-share", str(review_payload))
 
@@ -393,3 +396,26 @@ class CachedGenerationTests(TestCase):
         self.assertEqual(result["status"], "no_suitable_ideas")
         self.assertEqual(result["generation_summary"]["drafted"], 0)
         self.assertEqual(self.llm.generate_json.call_count, 1)
+
+    def test_private_upload_ids_cannot_compete_with_public_citation_sources(self):
+        video = self.add_video(1)
+        self.support(video)
+        self.dna.performance_summary = {
+            "recent_videos": [{"video_id": "own-history-id", "title": "Agent swarm"}],
+            "top_videos_90d": [{"video_id": "own-top-id", "views": 99}],
+        }
+        self.dna.profile.update({
+            "core_topic": "Japan travel", "target_audience": "Bangla travellers",
+            "primary_language": "bn", "main_content_formats": ["tutorial"],
+            "winning_topic_patterns": ["own-history-id agent swarm"],
+            "traffic_source_pattern": "own-top-id",
+        })
+        self.dna.save()
+        self.raw["idea"] = "জাপান ভ্রমণের বাজেট পরিকল্পনা"
+        result = self.generate()
+        request = self.llm.generate_json.call_args_list[0].kwargs["user_payload"]
+        self.assertNotIn("own-history-id", str(request))
+        self.assertNotIn("own-top-id", str(request))
+        self.assertEqual(request["creator_preferences"]["target_audience"], "Bangla travellers")
+        self.assertEqual([v["video_id"] for v in request["videos"]], [video.youtube_video_id])
+        self.assertEqual(len(result["ideas"]), 1)
