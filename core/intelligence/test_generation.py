@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
+from .grounding_services import EvidenceReviewUnavailable
 
 from youtube_channels.models import YouTubeChannel as Connection
 from .generation_services import generate_ideas
@@ -33,11 +34,29 @@ class CachedGenerationTests(TestCase):
             "suggested_video_length": "8 minutes", "risk": "Prices may change",
             "supporting_video_ids": [],
         }
-        self.llm.generate_json.return_value = {"ideas": [self.raw]}
+        self.generation_response = {"ideas": [self.raw]}
+        self.review_response = None
+        self.llm.generate_json.side_effect = self.model_response
         self.queue = patch("intelligence.tasks.queue_pool_refresh", return_value="fresh").start()
         self.addCleanup(patch.stopall)
         patch("requests.get", side_effect=AssertionError("Live HTTP forbidden")).start()
         patch("urllib.request.urlopen", side_effect=AssertionError("Live HTTP forbidden")).start()
+
+    def model_response(self, **kwargs):
+        payload = kwargs["user_payload"]
+        if "candidates" not in payload:
+            return self.generation_response
+        if isinstance(self.review_response, Exception):
+            raise self.review_response
+        if self.review_response is not None:
+            return self.review_response
+        return {"reviews": [{
+            "idea_index": candidate["idea_index"], "language_ok": True,
+            "unsupported_demand_claims": False,
+            "sources": [{"video_id": source["video_id"], "same_topic": True,
+                         "same_entities": True, "title_quote": source["title"]}
+                        for source in candidate["sources"]],
+        } for candidate in payload["candidates"]]}
 
     def make_dna(self, user, channel_id, summary):
         connection = Connection.objects.create(
@@ -80,11 +99,11 @@ class CachedGenerationTests(TestCase):
         self.assertEqual(self.generate()["status"], "collecting_evidence")
         self.llm.generate_json.assert_not_called()
 
-    def test_one_llm_call_no_live_youtube_and_private_isolation(self):
+    def test_generation_and_review_use_no_live_youtube_and_isolate_private_data(self):
         self.support(self.add_video(1))
         result = self.generate()
-        self.llm.generate_json.assert_called_once()
-        payload = self.llm.generate_json.call_args.kwargs["user_payload"]
+        self.assertEqual(self.llm.generate_json.call_count, 2)
+        payload = self.llm.generate_json.call_args_list[0].kwargs["user_payload"]
         self.assertEqual(payload["private_performance_summary"], {"private": "owner-data"})
         self.assertNotIn("do-not-share", str(payload))
         self.assertEqual(result["ideas"][0]["evidence_mode"], "LIMITED_EVIDENCE")
@@ -182,7 +201,7 @@ class CachedGenerationTests(TestCase):
 
     def test_partial_result_does_not_pad_with_unsupported_ideas(self):
         self.support(self.add_video(1))
-        self.llm.generate_json.return_value = {"ideas": [self.raw, {
+        self.generation_response = {"ideas": [self.raw, {
             **self.raw, "supporting_video_ids": ["made-up"],
         }]}
         result = generate_ideas(user_id=self.user.pk, count=2, llm_client=self.llm)
@@ -198,7 +217,128 @@ class CachedGenerationTests(TestCase):
 
     def test_invalid_model_response_does_not_partially_save(self):
         self.support(self.add_video(1))
-        self.llm.generate_json.return_value = {"ideas": [self.raw, {"idea": "incomplete"}]}
+        self.generation_response = {"ideas": [self.raw, {"idea": "incomplete"}]}
         with self.assertRaises(ValidationError):
             generate_ideas(user_id=self.user.pk, count=2, llm_client=self.llm)
         self.assertFalse(GeneratedIdea.objects.exists())
+
+    def ai_video(self, title):
+        self.pool.definition = {"topic": "ai tools"}
+        self.pool.save()
+        video = self.add_video("ai")
+        video.title = title
+        video.save()
+        self.support(video)
+        return video
+
+    def test_groq_api_cannot_cite_grok_course_even_if_model_claims_support(self):
+        self.ai_video("Grok AI Full Course Bangla | Free AI Tools Tutorial 2026")
+        self.raw["idea"] = "Groq API দিয়ে AI অ্যাপ বানানো"
+        self.assertEqual(self.generate()["ideas"], [])
+        self.assertEqual(self.llm.generate_json.call_count, 1)
+        self.assertFalse(GeneratedIdea.objects.exists())
+
+    def test_agent_swarm_cannot_cite_generic_ai_tools_roundup(self):
+        self.ai_video("12 Effective AI Tools for Software Engineers")
+        self.raw["idea"] = "AI এজেন্ট স্বার্ম দিয়ে আসল কাজ"
+        self.assertEqual(self.generate()["ideas"], [])
+        self.assertEqual(self.llm.generate_json.call_count, 1)
+
+    def test_matching_specific_product_can_pass_review(self):
+        self.ai_video("Build AI tools with the Groq API")
+        self.raw["idea"] = "Build AI tools with Groq API"
+        self.assertEqual(len(self.generate()["ideas"]), 1)
+
+    def test_korean_word_in_bangla_output_is_rejected_before_review(self):
+        self.ai_video("Free AI tools comparison Bangla")
+        self.dna.profile["primary_language"] = "bn"
+        self.dna.save()
+        self.raw["idea"] = "ফ্রি AI টুল বাংলায় টেস্ট: 여러 টুলে একই কাজ"
+        self.assertEqual(self.generate()["ideas"], [])
+        self.assertEqual(self.llm.generate_json.call_count, 1)
+
+    def test_bangla_with_english_product_names_is_allowed(self):
+        self.ai_video("Free AI tools comparison Bangla")
+        self.dna.profile["primary_language"] = "bn"
+        self.dna.save()
+        self.raw["idea"] = "ফ্রি AI টুল দিয়ে একই কাজ করে তুলনা"
+        self.assertEqual(len(self.generate()["ideas"]), 1)
+
+    def test_semantic_review_can_reject_a_valid_but_unrelated_video_id(self):
+        self.support(self.add_video(1))
+        self.review_response = {"reviews": [{"idea_index": 0, "language_ok": True,
+            "unsupported_demand_claims": False, "sources": [{
+                "video_id": "video-1", "same_topic": False, "same_entities": True,
+                "title_quote": "Japan travel budget tips",
+            }]}]}
+        self.assertEqual(self.generate()["ideas"], [])
+        self.assertFalse(IdeaEvidence.objects.exists())
+
+    def test_fake_review_quote_does_not_make_a_source_eligible(self):
+        self.support(self.add_video(1))
+        self.review_response = {"reviews": [{"idea_index": 0, "language_ok": True,
+            "unsupported_demand_claims": False, "sources": [{
+                "video_id": "video-1", "same_topic": True, "same_entities": True,
+                "title_quote": "Invented specific subject",
+            }]}]}
+        self.assertEqual(self.generate()["ideas"], [])
+
+    def test_review_failure_never_saves_unchecked_ideas(self):
+        self.support(self.add_video(1))
+        for response in (RuntimeError("Provider unavailable"), {}, {"reviews": []}):
+            with self.subTest(response=response):
+                self.review_response = response
+                with self.assertRaises(EvidenceReviewUnavailable):
+                    self.generate()
+        self.assertFalse(GeneratedIdea.objects.exists())
+
+    def test_review_recalculates_evidence_breadth_after_removing_weak_citations(self):
+        videos = [self.add_video(index) for index in range(3)]
+        self.raw["supporting_video_ids"] = [v.youtube_video_id for v in videos]
+        self.review_response = {"reviews": [{"idea_index": 0, "language_ok": True,
+            "unsupported_demand_claims": False, "sources": [{
+                "video_id": videos[0].youtube_video_id, "same_topic": True,
+                "same_entities": True, "title_quote": videos[0].title,
+            }]}]}
+        idea = self.generate()["ideas"][0]
+        self.assertEqual(idea["evidence_mode"], "LIMITED_EVIDENCE")
+        self.assertEqual(IdeaEvidence.objects.count(), 1)
+
+    def test_old_sources_are_historical_even_with_fresh_counts(self):
+        video = self.add_video(1)
+        video.published_at = timezone.now() - timedelta(days=120)
+        video.save()
+        self.support(video)
+        idea = self.generate()["ideas"][0]
+        self.assertEqual(idea["evidence_recency"], "historical")
+        self.assertEqual(idea["momentum_status"], "not_measured")
+        self.assertIn("120 days ago", idea["why_now"])
+        self.assertIn("does not establish current or rising demand", idea["why_now"])
+
+    def test_review_does_not_receive_private_channel_analytics(self):
+        self.support(self.add_video(1))
+        self.generate()
+        review_payload = self.llm.generate_json.call_args_list[1].kwargs["user_payload"]
+        self.assertNotIn("owner-data", str(review_payload))
+        self.assertNotIn("do-not-share", str(review_payload))
+
+    def test_review_rejects_unmeasured_current_demand_claims(self):
+        self.support(self.add_video(1))
+        self.review_response = {"reviews": [{"idea_index": 0, "language_ok": True,
+            "unsupported_demand_claims": True, "sources": [{
+                "video_id": "video-1", "same_topic": True, "same_entities": True,
+                "title_quote": "Japan travel budget tips",
+            }]}]}
+        self.assertEqual(self.generate()["ideas"], [])
+        self.assertFalse(GeneratedIdea.objects.exists())
+
+    def test_reviewer_cannot_add_a_source_not_cited_by_this_candidate(self):
+        self.support(self.add_video(1))
+        self.add_video(2)
+        self.review_response = {"reviews": [{"idea_index": 0, "language_ok": True,
+            "unsupported_demand_claims": False, "sources": [{
+                "video_id": "video-2", "same_topic": True, "same_entities": True,
+                "title_quote": "Japan travel budget tips",
+            }]}]}
+        self.assertEqual(self.generate()["ideas"], [])
+        self.assertFalse(IdeaEvidence.objects.exists())

@@ -190,12 +190,18 @@ class IntelligenceAPITests(APITestCase):
         )
         llm_class.return_value.model = "test-model"
         llm_class.return_value.generate_json.return_value = {"ideas": [{
-            "idea": "Plan your first Japan trip", "hook": "Start with a realistic budget",
+            "idea": "প্রথম জাপান ভ্রমণের পরিকল্পনা", "hook": "Start with a realistic budget",
             "why_this_fits_creator": "A practical guide for your audience",
             "why_now": "Evergreen planning question", "suggested_format": "guide",
             "suggested_video_length": "8 minutes", "risk": "Prices may change",
             "supporting_video_ids": ["source-video"],
         }]}
+        generated = llm_class.return_value.generate_json.return_value
+        llm_class.return_value.generate_json.side_effect = [generated, {"reviews": [{
+            "idea_index": 0, "language_ok": True, "unsupported_demand_claims": False,
+            "sources": [{"video_id": "source-video", "same_topic": True,
+                         "same_entities": True, "title_quote": "Japan travel"}],
+        }]}]
         response = self.client.post(reverse("intelligence-ideas"), {"count": 1}, format="json")
         self.assertEqual(response.status_code, 201, response.data)
         idea = response.data["data"]["ideas"][0]
@@ -203,9 +209,9 @@ class IntelligenceAPITests(APITestCase):
         self.assertEqual(idea["supporting_videos"][0]["views"], 1234)
         saved = GeneratedIdea.objects.get()
         self.assertEqual(saved.dna.connection.user_id, self.other.pk)
-        payload = llm_class.return_value.generate_json.call_args.kwargs["user_payload"]
+        payload = llm_class.return_value.generate_json.call_args_list[0].kwargs["user_payload"]
         self.assertEqual(payload["private_performance_summary"], {"private_marker": "second-creator"})
-        llm_class.return_value.generate_json.assert_called_once()
+        self.assertEqual(llm_class.return_value.generate_json.call_count, 2)
         creator_dispatch.assert_not_called()
         http_get.assert_not_called()
         urlopen.assert_not_called()

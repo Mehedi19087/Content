@@ -61,7 +61,7 @@ endpoint below for the zero-live-YouTube generation workflow.
    HTTP 201 has `status: "ready"` and one or more ideas. Fewer than `count` may
    be returned; unsupported ideas are discarded, never padded. Each idea adds:
 
-   - `calculation_version: "youtube-evidence-v2"` and `evidence_expires_at`.
+   - `calculation_version: "youtube-evidence-v3"` and `evidence_expires_at`.
    - `demand_status`: `observed_outperformance` or `not_established`.
    - Source video `views`, `channel_title`, `published_at`, `fetched_at`, and
      `source: "youtube_data_api"`, copied from saved API results, never the LLM.
@@ -214,3 +214,29 @@ outcome. It also returns `next_discovery_at` (null when discovery is already due
 Worker logs emit `intelligence.collection_started`, `collection_completed`, or
 `collection_skipped`, including counts and a reason. A Celery "succeeded" line alone
 only means the task completed, not that evidence was found.
+
+## Idea relevance and language checks
+
+Generation v3 uses two bounded LLM calls: drafting, then a separate batched citation
+review. Drafting starts from the subjects in public video titles. Creator history
+only informs personalization; it cannot establish market evidence. The review sees
+candidate prose and the cited titles, not the raw private analytics. It must confirm
+precise topic and entity matches, return a real excerpt of each accepted title, and
+reject unsupported current-demand claims. The backend validates the review shape,
+source ownership and quotes before saving anything. Review failure returns 503
+`evidence_review_unavailable`; it never falls back to unchecked suggestions.
+
+Deterministic guards additionally prevent Groq/Grok substitutions, citing generic
+AI-tool roundups for agent-swarm ideas, and unrelated writing scripts in supported
+output languages (including Hangul in Bangla prose). English technical names remain
+allowed in Bangla. Failed candidates are omitted; fewer ideas may be returned.
+A semantic LLM review remains a heuristic, not a proof of relevance.
+
+`evidence_recency` is `historical` if all cited videos are more than 30 days old,
+otherwise `includes_recent_uploads`. `momentum_status` is `not_measured`. The UI
+labels historical performance explicitly and describes outlier ratios as cumulative
+views. A recent fetch never establishes rising demand. Session cache v3 invalidates
+ideas produced before these checks. Deploy backend and frontend together; no schema
+migration or new environment variable is needed for this revision. The extra review
+call increases provider usage and latency; existing 60-second provider defaults fit
+within the frontend's 180-second generation timeout.
