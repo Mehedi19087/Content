@@ -179,3 +179,11 @@ class QuotaLedger(models.Model):
     search_calls = models.PositiveIntegerField(default=0)
     data_units = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class CreatorIdeaFeed(models.Model):
+    dna = models.OneToOneField(ChannelDNA, on_delete=models.CASCADE, related_name="idea_feed")
+    profile_key = models.CharField(max_length=64, blank=True)
+    result = models.JSONField(default=dict)
+    requested_at = models.DateTimeField(null=True, blank=True)
+    next_refresh_at = models.DateTimeField(null=True, blank=True)

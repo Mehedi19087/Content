@@ -46,6 +46,7 @@ class PoolResponseSerializer(serializers.Serializer):
 
 
 class IdeasResponseSerializer(serializers.Serializer):
+    next_refresh_at = serializers.CharField(read_only=True, allow_null=True)
     generation_summary = serializers.JSONField(read_only=True)
     status = serializers.CharField(read_only=True)
     message = serializers.CharField(read_only=True)

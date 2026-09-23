@@ -88,7 +88,7 @@ def _queue_refresh(pool_id):
         return "queue_unavailable"
 
 
-def generate_ideas(*, user_id, count=5, llm_client=None):
+def generate_ideas(*, user_id, count=5, llm_client=None, provider_timeout=None):
     from .models import (
         ChannelDNA, CompetitorBaseline, GeneratedIdea, IdeaEvidence,
         TrendSignal, VideoStatSnapshot, YouTubeVideo,
@@ -207,7 +207,7 @@ def generate_ideas(*, user_id, count=5, llm_client=None):
     )
     # Keep this synchronous draft + review flow within its request deadline.
     # DeepSeek otherwise defaults to extended thinking, including for JSON review.
-    client = llm_client or DeepSeekClient(thinking_enabled=False)
+    client = llm_client or DeepSeekClient(thinking_enabled=False, timeout_seconds=provider_timeout)
     response = client.generate_json(
         system_prompt=SYSTEM_PROMPT,
         user_payload={

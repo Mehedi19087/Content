@@ -2,7 +2,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .creator_services import get_dna, update_dna
-from .generation_services import generate_ideas
+from .feed_services import daily_ideas
 from .serializers import (
     AnalyzeCreatorSerializer,
     DNAResponseSerializer,
@@ -49,11 +49,12 @@ class NichePoolAPIView(APIView):
 
 
 class GenerateIdeasAPIView(APIView):
+    def get(self, request):
+        result = daily_ideas(user_id=request.user.pk)
+        return Response({"data": IdeasResponseSerializer(result).data})
+
     def post(self, request):
+        # Legacy clients cannot bypass the daily cache by changing count.
         serializer = GenerateIdeasSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        result = generate_ideas(user_id=request.user.pk, **serializer.validated_data)
-        return Response(
-            {"data": IdeasResponseSerializer(result).data},
-            status=201 if result["ideas"] else 200,
-        )
+        return self.get(request)

@@ -304,3 +304,32 @@ After these fixes, a live run using the same nine-video pool returned three draf
 three review-approved ideas, and zero rejections. Model call durations were 4.65s
 and 1.77s. The diagnostic run rolled back generated rows; timings are observations,
 not guaranteed response times. Automated tests still mock all external requests.
+
+## Automatic daily idea feed
+
+`GET /api/intelligence/ideas/` now returns a server-persisted selection of three
+validated ideas and `next_refresh_at` (ISO timestamp). The first read after expiry
+prepares the next selection; subsequent reads, across devices, reuse it. The legacy
+POST endpoint uses the same cache and ignores valid count choices for generation.
+A database reservation serializes creation and prevents concurrent requests from
+spending model credits repeatedly. Profile changes do not bypass the cooldown.
+
+Each refresh drafts six candidates from saved evidence and, only if needed, makes
+one additional six-candidate pass. Four provider calls maximum, each with a
+30-second timeout. The selection contains the first three distinct accepted titles.
+No unsupported fallback is used when fewer than three pass. Partial sets and
+provider failures have a one-hour retry cooldown; pending evidence collection has
+a one-minute recheck. These retries occur on the next visit or while the page stays
+open. The `preparing` status tells another client to poll without starting a duplicate.
+
+Successful sets expire within 24 hours, or earlier when their source statistics
+expire. `next_refresh_at` is the authoritative next-update date shown to users.
+Shared YouTube collection keeps its existing per-pool cadence and monthly healthy
+competitor discovery; viewing a cached feed makes no YouTube or model calls.
+This is lazy refresh, not a new scheduled job: no provider spend is required for
+inactive creators. Existing evidence scheduler/worker operation is unchanged.
+
+Deploy backend migration `intelligence.0003_add_creator_idea_feed` before the
+frontend switches to GET. The UI loads automatically and removes manual generation
+and count controls. Browser session storage remains only a Studio-navigation cache;
+the database is the source of the daily selection.

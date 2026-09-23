@@ -24,7 +24,7 @@ class IntelligenceAPITests(APITestCase):
 
     def test_authentication_required(self):
         self.client.force_authenticate(None)
-        for name in ("intelligence-dna", "intelligence-niche"):
+        for name in ("intelligence-dna", "intelligence-niche", "intelligence-ideas"):
             self.assertEqual(self.client.get(reverse(name)).status_code, 401)
         for name in ("intelligence-analyze", "intelligence-ideas"):
             self.assertEqual(self.client.post(reverse(name), {}).status_code, 401)
@@ -202,19 +202,21 @@ class IntelligenceAPITests(APITestCase):
             "sources": [{"video_id": "source-video", "same_topic": True,
                          "same_entities": True, "title_quote": "Japan travel"}],
         }]}]
+        llm_class.return_value.generate_json.side_effect = list(llm_class.return_value.generate_json.side_effect) * 2
         response = self.client.post(reverse("intelligence-ideas"), {"count": 1}, format="json")
-        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.status_code, 200, response.data)
         idea = response.data["data"]["ideas"][0]
         self.assertEqual(idea["evidence_mode"], "LIMITED_EVIDENCE")
         self.assertEqual(idea["supporting_videos"][0]["views"], 1234)
-        saved = GeneratedIdea.objects.get()
+        saved = GeneratedIdea.objects.first()
         self.assertEqual(saved.dna.connection.user_id, self.other.pk)
         payload = llm_class.return_value.generate_json.call_args_list[0].kwargs["user_payload"]
         self.assertNotIn("private_performance_summary", payload)
         self.assertNotIn("second-creator", str(payload))
         self.assertEqual(payload["creator_preferences"]["core_topic"], profile["core_topic"])
-        llm_class.assert_called_once_with(thinking_enabled=False)
-        self.assertEqual(llm_class.return_value.generate_json.call_count, 2)
+        self.assertEqual(llm_class.call_count, 2)
+        llm_class.assert_called_with(thinking_enabled=False, timeout_seconds=30)
+        self.assertEqual(llm_class.return_value.generate_json.call_count, 4)
         creator_dispatch.assert_not_called()
         http_get.assert_not_called()
         urlopen.assert_not_called()
