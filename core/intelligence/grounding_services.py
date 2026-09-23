@@ -80,7 +80,7 @@ def exact_subject_matches(payload, video):
     return True
 
 
-def review_citations(candidates, client, language):
+def review_citations(candidates, client, language, rejection_counts=None):
     """One batched model review; fail closed on errors or malformed output."""
     try:
         response = client.generate_json(
@@ -113,10 +113,19 @@ def review_citations(candidates, client, language):
                 or not isinstance(review.get("sources"), list)):
             raise EvidenceReviewUnavailable()
         by_index[index] = review
+    rejection_counts = rejection_counts if rejection_counts is not None else {}
+
+    def reject(reason):
+        rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+
     approved = []
     for index, (payload, videos) in enumerate(candidates):
         review = by_index[index]
-        if not review["language_ok"] or review["unsupported_demand_claims"]:
+        if not review["language_ok"]:
+            reject("language")
+            continue
+        if review["unsupported_demand_claims"]:
+            reject("unsupported_claims")
             continue
         sources = {video.youtube_video_id: video for video in videos}
         accepted = {}
@@ -129,9 +138,11 @@ def review_citations(candidates, client, language):
             video = sources[video_id]
             quote = citation.get("title_quote")
             if (citation.get("same_topic") is True and citation.get("same_entities") is True
-                    and isinstance(quote, str) and len(quote.strip()) >= 8
+                    and isinstance(quote, str) and any(char.isalnum() for char in quote)
                     and _normalized(quote) in _normalized(video.title)):
                 accepted[video_id] = video
         if accepted:
             approved.append((payload, list(accepted.values())))
+        else:
+            reject("source_relevance")
     return approved

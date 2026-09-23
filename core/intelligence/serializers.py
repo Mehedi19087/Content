@@ -46,6 +46,7 @@ class PoolResponseSerializer(serializers.Serializer):
 
 
 class IdeasResponseSerializer(serializers.Serializer):
+    generation_summary = serializers.JSONField(read_only=True)
     status = serializers.CharField(read_only=True)
     message = serializers.CharField(read_only=True)
     ideas = serializers.ListField(child=serializers.DictField(), read_only=True)

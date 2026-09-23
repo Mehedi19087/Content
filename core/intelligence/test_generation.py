@@ -342,3 +342,54 @@ class CachedGenerationTests(TestCase):
             }]}]}
         self.assertEqual(self.generate()["ideas"], [])
         self.assertFalse(IdeaEvidence.objects.exists())
+
+    def test_discarded_why_now_does_not_reject_valid_output(self):
+        self.support(self.add_video(1))
+        self.dna.profile["primary_language"] = "en"
+        self.dna.save()
+        self.raw["why_now"] = "여러 high demand"
+        result = self.generate()
+        self.assertEqual(len(result["ideas"]), 1)
+        reviewed = self.llm.generate_json.call_args_list[1].kwargs["user_payload"]
+        self.assertNotIn("why_now", reviewed["candidates"][0]["idea"])
+        self.assertNotIn("여러", result["ideas"][0]["why_now"])
+
+    def test_short_product_quote_can_support_reviewed_idea(self):
+        video = self.ai_video("Grok AI Full Course | AI tools tutorial")
+        self.raw["idea"] = "Getting started with Grok AI"
+        self.review_response = {"reviews": [{"idea_index": 0, "language_ok": True,
+            "unsupported_demand_claims": False, "sources": [{
+                "video_id": video.youtube_video_id, "same_topic": True,
+                "same_entities": True, "title_quote": "Grok AI",
+            }]}]}
+        self.assertEqual(len(self.generate()["ideas"]), 1)
+
+    def test_rejected_drafts_distinguish_evidence_from_recommendations(self):
+        self.ai_video("Grok AI Full Course | AI tools tutorial")
+        self.raw["idea"] = "Groq API app"
+        result = self.generate()
+        self.assertEqual(result["status"], "no_suitable_ideas")
+        self.assertEqual(result["evidence_mode"], "LIMITED_EVIDENCE")
+        self.assertIsNotNone(result["data_timestamp"])
+        self.assertEqual(result["generation_summary"], {
+            "available_videos": 1, "drafted": 1, "accepted": 0,
+            "rejections": {"source_relevance": 1},
+        })
+        self.assertFalse(GeneratedIdea.objects.exists())
+
+    def test_review_rejection_reason_is_reported_without_draft_text(self):
+        self.support(self.add_video(1))
+        self.review_response = {"reviews": [{"idea_index": 0, "language_ok": True,
+            "unsupported_demand_claims": True, "sources": []}]}
+        result = self.generate()
+        self.assertEqual(result["generation_summary"]["rejections"],
+                         {"unsupported_claims": 1})
+        self.assertNotIn(self.raw["idea"], str(result))
+
+    def test_empty_model_batch_has_explicit_outcome(self):
+        self.add_video(1)
+        self.generation_response = {"ideas": []}
+        result = self.generate()
+        self.assertEqual(result["status"], "no_suitable_ideas")
+        self.assertEqual(result["generation_summary"]["drafted"], 0)
+        self.assertEqual(self.llm.generate_json.call_count, 1)

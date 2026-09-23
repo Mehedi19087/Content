@@ -37,7 +37,7 @@ Write prose in output_language. For Bangla use Bengali prose with English techni
 names where needed; never insert unrelated Korean or other-language words.
 Every idea must cite at least one supplied video directly relevant to its topic.
 Return fewer ideas or an empty array when evidence does not support more ideas.
-Each idea must contain strings: idea, hook, why_this_fits_creator, why_now,
+Each idea must contain strings: idea, hook, why_this_fits_creator,
 suggested_format, suggested_video_length, risk; and supporting_video_ids, a list
 of video IDs selected only from the supplied evidence. Cite evidence only when
 it directly supports this idea. Do not invent videos, channels, statistics,
@@ -45,6 +45,8 @@ current events, analytics, evidence or source URLs. Do not claim broad trends
 from limited evidence. Never produce an idea without supporting video evidence.
 The wording and creator-fit explanation are AI interpretations, not measured facts.
 Do not include numeric analytics in prose; the server supplies measured metrics.
+Do not claim high or rising demand. Prefer a useful tutorial or comparison on the
+exact subject of a source title. why_now is optional and replaced by the server.
 Evidence modes, confidence, timestamps and labels are assigned by the server.
 """
 TEXT_FIELDS = (
@@ -223,10 +225,14 @@ def generate_ideas(*, user_id, count=5, llm_client=None):
     if not isinstance(raw_ideas, list) or len(raw_ideas) > count:
         raise ValidationError({"ideas": "The model returned an invalid number of ideas."})
     candidates = []
+    rejection_counts = {}
     for raw in raw_ideas:
         if not isinstance(raw, dict):
             raise ValidationError({"ideas": "The model returned an invalid idea."})
-        payload = {field: _clean_text(raw.get(field), field) for field in TEXT_FIELDS}
+        payload = {
+            field: _clean_text(raw.get(field), field)
+            for field in TEXT_FIELDS if field != "why_now"
+        }
         supplied_ids = raw.get("supporting_video_ids", [])
         if not isinstance(supplied_ids, list):
             supplied_ids = []
@@ -237,9 +243,23 @@ def generate_ideas(*, user_id, count=5, llm_client=None):
             evidence[value] for value in valid_ids
             if exact_subject_matches(payload, evidence[value])
         ]
-        if supported and language_is_consistent(payload, language):
+        if not supported:
+            reason = "source_relevance"
+        elif not language_is_consistent(payload, language):
+            reason = "language"
+        else:
             candidates.append((payload, supported))
-    approved = review_citations(candidates, client, language) if candidates else []
+            continue
+        rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+    approved = review_citations(
+        candidates, client, language, rejection_counts,
+    ) if candidates else []
+    generation_summary = {
+        "available_videos": len(videos), "drafted": len(raw_ideas),
+        "accepted": len(approved), "rejections": rejection_counts,
+    }
+    logger.info("intelligence.idea_generation_completed user_id=%s summary=%s",
+                user_id, generation_summary)
     prepared = []
     for payload, supported in approved:
         mode = _mode(len({video.channel_id for video in supported}))
@@ -303,10 +323,17 @@ def generate_ideas(*, user_id, count=5, llm_client=None):
         })
         prepared.append((payload, supported))
     if not prepared:
-        return empty_result(
-            "No ideas passed the source-relevance and language checks. "
-            "Try again or review your channel topic; unchecked suggestions were not saved."
-        )
+        return {
+            **empty_result(
+                f"We found {len(videos)} eligible YouTube videos, but could not create "
+                "a recommendation that passed all checks. Try a new draft using these "
+                "sources, or narrow your channel topic. Your previous ideas are kept.",
+                status="no_suitable_ideas",
+            ),
+            "evidence_mode": available_mode,
+            "data_timestamp": data_time.isoformat(),
+            "generation_summary": generation_summary,
+        }
     output = []
     model_version = getattr(client, "model", settings.DEEPSEEK_MODEL)
     if not isinstance(model_version, str):
@@ -335,6 +362,7 @@ def generate_ideas(*, user_id, count=5, llm_client=None):
     return {
         "ideas": output,
         "status": "ready",
+        "generation_summary": generation_summary,
         "message": "" if len(output) == count else (
             f"Only {len(output)} of {count} requested ideas passed source-relevance and language checks."
         ),

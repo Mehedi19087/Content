@@ -240,3 +240,33 @@ ideas produced before these checks. Deploy backend and frontend together; no sch
 migration or new environment variable is needed for this revision. The extra review
 call increases provider usage and latency; existing 60-second provider defaults fit
 within the frontend's 180-second generation timeout.
+
+### Generation outcomes and waiting UI
+
+Generation still uses a synchronous request with two model calls. Clients should
+show elapsed wall-clock time while waiting, disable repeat submissions, and avoid
+inventing percentage completion or per-stage progress. Existing supported ideas
+should remain available if a new batch is empty or fails.
+
+A `200` response with `status: "no_suitable_ideas"` means eligible videos exist but
+no draft passed all checks. It is distinct from `insufficient_evidence` and
+`collecting_evidence`. It retains the available evidence mode and timestamp.
+Both `ready` and `no_suitable_ideas` include a `generation_summary`, for example:
+
+```json
+{
+  "available_videos": 9,
+  "drafted": 5,
+  "accepted": 0,
+  "rejections": {"source_relevance": 3, "language": 1, "unsupported_claims": 1}
+}
+```
+
+Each rejected draft counts once, at its first failed check. `drafted: 0` means the
+model returned no candidates. Counts are also logged in
+`intelligence.idea_generation_completed`; private analytics and rejected prose
+are not logged. The reviewer sees only prose intended for display: model-written
+`why_now` is discarded before language and citation checks because the server
+supplies that field from evidence. Short, exact title quotes are allowed when the
+semantic reviewer also approves the topic and entities. Unmatched citations,
+language problems, and unsupported demand claims still fail closed.
