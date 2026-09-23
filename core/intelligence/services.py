@@ -187,7 +187,9 @@ def video_matches_niche(pool, video):
     audio = video.metadata.get("snippet", {}).get("defaultAudioLanguage", "")
     if expected and audio and audio.split("-")[0].lower() != expected:
         return False
-    return _matches(pool, video.title + " " + video.description)
+    # Descriptions often repeat a channel's entire keyword list on unrelated
+    # uploads. Require topical evidence in the video's own title.
+    return _matches(pool, video.title)
 
 
 def _candidate_channels(client, pool, ids):
@@ -354,7 +356,7 @@ def refresh_niche_pool(pool_id, rediscover=False, expected_requested_at=None):
             scores = Counter()
             for item in found:
                 snippet = item.get("snippet", {})
-                text = snippet.get("title", "") + " " + snippet.get("description", "")
+                text = snippet.get("title", "")
                 if _matches(pool, text) and snippet.get("channelId"):
                     scores[snippet["channelId"]] += 1
             search_ids = [item.get("id", {}).get("videoId") for item in found]

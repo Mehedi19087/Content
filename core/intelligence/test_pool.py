@@ -267,3 +267,13 @@ class NichePoolTests(TestCase):
         self.assertEqual(search_topics(self.pool), [
             "programming", "software development", "computer science", "ai tools",
         ])
+
+    def test_unrelated_title_cannot_match_repeated_description_keywords(self):
+        from .services import video_matches_niche
+
+        store_channel(channel_item("c"))
+        item = video_item("c", 1)
+        item["snippet"].update({"title": "How to stop overthinking",
+                                "description": "Subscribe for Japan travel guides"})
+        video = store_videos([item])[0]
+        self.assertFalse(video_matches_niche(self.pool, video))

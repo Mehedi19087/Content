@@ -108,7 +108,8 @@ Discovery v3 splits the reviewed topic on subject boundaries (commas, "and", etc
 into up to four phrases and combines them with the official Search OR operator.
 Language and region are API parameters; supported non-English languages also
 add a readable language term to each subject (for example, "programming bangla"); results are restricted to the last 180 days.
-Videos need to match one subject, not half of an entire multi-subject profile.
+Video titles need to match one subject, not half of an entire multi-subject profile.
+Repeated keyword lists in descriptions cannot qualify unrelated uploads.
 An explicit mismatched audio language excludes a video; channel metadata language
 alone does not. Search hits are validated with videos.list even if absent from the
 latest uploads. Up to ten candidates are inspected and five channels retained.
