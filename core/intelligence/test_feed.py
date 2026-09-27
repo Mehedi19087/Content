@@ -98,3 +98,51 @@ class DailyFeedTests(TestCase):
         response = client.get(reverse("intelligence-ideas"))
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.mock.call_count, 1)
+
+    def test_feed_sets_two_day_next_refresh_at(self):
+        now = timezone.now()
+        # Evidence expires 5 days from now, so next_refresh should be capped by the 2-day cadence
+        self.mock.return_value = {
+            "ideas": [
+                {
+                    "id": n, "idea": f"Idea {n}",
+                    "evidence_expires_at": (now + timedelta(days=5)).isoformat(),
+                    "data_timestamp": now.isoformat(), "evidence_mode": "EVIDENCE_BACKED",
+                }
+                for n in range(3)
+            ],
+            "status": "ready", "message": "",
+            "evidence_mode": "EVIDENCE_BACKED", "data_timestamp": now.isoformat(),
+            "refresh_status": "not_needed", "creator_refresh_status": "not_needed",
+        }
+        result = daily_ideas(user_id=self.user.pk)
+        self.assertEqual(result["status"], "ready")
+        feed = CreatorIdeaFeed.objects.get(dna=self.dna)
+        self.assertIsNotNone(feed.next_refresh_at)
+        diff = feed.next_refresh_at - now
+        # Difference should be approximately 2 days (48 hours)
+        self.assertAlmostEqual(diff.total_seconds(), 2 * 86400, delta=10)
+
+    @patch("intelligence.tasks.generate_creator_feed_task.apply_async")
+    def test_refresh_due_creator_feeds(self, mock_apply_async):
+        from intelligence.workflow_services import refresh_due_creator_feeds
+        from django.core.management import call_command
+
+        # Initially, self.dna has confirmed=True and no feed row, so it is due
+        results = refresh_due_creator_feeds()
+        self.assertEqual(results.get(self.user.pk), "queued")
+        mock_apply_async.assert_called_with(args=[self.user.pk], retry=False)
+
+        # Once a feed exists and next_refresh_at is in the future, it is not due
+        CreatorIdeaFeed.objects.create(
+            dna=self.dna,
+            next_refresh_at=timezone.now() + timedelta(days=2),
+        )
+        mock_apply_async.reset_mock()
+        results = refresh_due_creator_feeds()
+        self.assertNotIn(self.user.pk, results)
+        mock_apply_async.assert_not_called()
+
+        # Test management command execution
+        call_command("refresh_creator_feeds")
+

@@ -2,6 +2,7 @@
 from datetime import timedelta
 import re
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
@@ -243,10 +244,22 @@ def analyze_creator(user_id, *, youtube_client=None, llm_client=None):
                 dna.profile = profile
                 dna.model_version = model_version
                 dna.confidence = confidence
+                if profile.get("core_topic") and profile.get("target_audience"):
+                    from .services import get_or_create_niche_pool
+                    from .workflow_services import queue_pool_refresh
+
+                    dna.confirmed = True
+                    dna.niche_pool = get_or_create_niche_pool(profile)[0]
+                    if dna.niche_pool_id:
+                        try:
+                            queue_pool_refresh(dna.niche_pool_id)
+                        except Exception:
+                            pass
             dna.performance_summary = summary
             dna.source = "youtube_owner_analytics"
             dna.fetched_at = now
-            dna.expires_at = now + timedelta(days=1)
+            feed_days = getattr(settings, "INTELLIGENCE_FEED_REFRESH_DAYS", 2)
+            dna.expires_at = now + timedelta(days=feed_days)
             dna.calculation_version = "channel-dna-v1"
             dna.evidence_mode = "AI_FALLBACK"
             dna.save()

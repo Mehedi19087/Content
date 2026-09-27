@@ -151,3 +151,44 @@ def refresh_due_pools():
         if should_discover or pool.expires_at is None or pool.expires_at <= now:
             results[pool.pk] = queue_pool_refresh(pool.pk, rediscover=should_discover)
     return results
+
+
+def refresh_due_creator_feeds():
+    from .models import ChannelDNA
+    from .tasks import generate_creator_feed_task
+
+    now = timezone.now()
+    results = {}
+    dnas = (
+        ChannelDNA.objects.filter(confirmed=True, connection__isnull=False)
+        .select_related("idea_feed", "connection")
+        .distinct()
+    )
+    for dna in dnas.iterator():
+        user_id = dna.connection.user_id
+        feed = getattr(dna, "idea_feed", None)
+        in_flight = (
+            feed is not None
+            and feed.requested_at is not None
+            and feed.requested_at > now - timedelta(minutes=10)
+        )
+        if in_flight:
+            results[user_id] = "already_in_flight"
+            continue
+
+        needs_refresh = (
+            feed is None
+            or feed.next_refresh_at is None
+            or feed.next_refresh_at <= now
+        )
+        if needs_refresh:
+            try:
+                generate_creator_feed_task.apply_async(args=[user_id], retry=False)
+                results[user_id] = "queued"
+            except Exception:
+                logger.warning(
+                    "intelligence.refresh_due_creator_feeds.queue_failed user_id=%s", user_id
+                )
+                results[user_id] = "queue_failed"
+    return results
+

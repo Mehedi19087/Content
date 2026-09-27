@@ -19,7 +19,11 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import NotFound, ValidationError
 
+import logging
+
 from ideas.llm_client import TextGenerationClient
+
+logger = logging.getLogger(__name__)
 
 from .exceptions import (
     YouTubeAPIError,
@@ -174,11 +178,21 @@ def connect_youtube_channel(
                 from intelligence.models import ChannelDNA
 
                 ChannelDNA.objects.filter(connection=channel).delete()
-            return channel
     except IntegrityError as exc:
         raise ValidationError(
             {"youtube": "Could not connect this YouTube channel."}
         ) from exc
+
+    try:
+        from intelligence.workflow_services import queue_creator_analysis
+
+        queue_creator_analysis(user_id=user.id)
+    except Exception:
+        logger.warning(
+            "youtube_channels.connect.auto_analysis_failed user_id=%s", user.id
+        )
+
+    return channel
 
 
 def get_youtube_channel(*, user_id: int) -> YouTubeChannel:

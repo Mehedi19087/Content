@@ -129,9 +129,10 @@ def generate_ideas(*, user_id, count=5, llm_client=None, provider_timeout=None):
     ).order_by(
         "-fetched_at", "-pk",
     )
+    feed_days = getattr(settings, "INTELLIGENCE_FEED_REFRESH_DAYS", 2)
     videos = list(YouTubeVideo.objects.filter(
         channel_id__in=channels, source="youtube_data_api",
-        expires_at__gt=now, fetched_at__gte=now - timedelta(hours=24),
+        expires_at__gt=now, fetched_at__gte=now - timedelta(days=feed_days),
         published_at__gte=now - timedelta(days=180), published_at__lte=now,
     ).select_related(
         "channel",
@@ -323,7 +324,7 @@ def generate_ideas(*, user_id, count=5, llm_client=None, provider_timeout=None):
             "evidence_message": message,
             "data_timestamp": idea_time.isoformat(),
             "evidence_expires_at": min(
-                min(video.expires_at, video.fetched_at + timedelta(hours=24))
+                min(video.expires_at, video.fetched_at + timedelta(days=feed_days))
                 for video in supported
             ).isoformat(),
             "demand_status": "observed_outperformance" if outliers else "not_established",

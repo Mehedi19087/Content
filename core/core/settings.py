@@ -328,12 +328,19 @@ INTELLIGENCE_WEB_SEARCH_API_KEY = os.getenv('INTELLIGENCE_WEB_SEARCH_API_KEY', '
 INTELLIGENCE_POOL_REFRESH_HOURS = max(
     12, int(os.getenv('INTELLIGENCE_POOL_REFRESH_HOURS', '24')),
 )
+INTELLIGENCE_FEED_REFRESH_DAYS = max(
+    1, int(os.getenv('INTELLIGENCE_FEED_REFRESH_DAYS', '2')),
+)
 
 # Run Celery beat, or invoke refresh_intelligence from an external scheduler.
 CELERY_BEAT_SCHEDULE = {
     'refresh-due-intelligence': {
         'task': 'intelligence.refresh_due_pools',
         'schedule': 10800.0,
+    },
+    'refresh-due-creator-feeds': {
+        'task': 'intelligence.refresh_due_creator_feeds',
+        'schedule': 3600.0,
     },
 }
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1

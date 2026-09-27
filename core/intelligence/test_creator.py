@@ -141,7 +141,12 @@ class CreatorDNATests(TestCase):
             code="code", state="state", redirect_uri="https://example.com/callback",
             youtube_client=self.client,
         )
-        self.assertFalse(ChannelDNA.objects.exists())
+        self.assertFalse(
+            ChannelDNA.objects.filter(connection__youtube_channel_id="UCowner").exists()
+        )
+        self.assertTrue(
+            ChannelDNA.objects.filter(connection__youtube_channel_id="UCnew", status="pending").exists()
+        )
 
 
 class CreatorClientTests(TestCase):

@@ -1,0 +1,445 @@
+GTM, Growth & Sales
+
+Turn product value into a repeatable path from the right audience to revenue.
+
+Core operating principles
+
+ALWAYS understand the product, customer, and proof before writing marketing copy.
+
+NEVER start with channel tactics before clarifying ICP, problem, positioning, and offer.
+
+Marketing is not “posting.” Sales is not “convincing everyone.” Focus on qualified demand and conversion.
+
+Prefer customer language over internal product jargon.
+
+Separate awareness, acquisition, activation, conversion, retention, and referral problems.
+
+Do not recommend every channel. Choose channels based on where the ICP already pays attention and how the product is bought.
+
+Every campaign must have a hypothesis, audience, offer, CTA, metric, and decision rule.
+
+Avoid fake urgency, fabricated social proof, unverifiable claims, spam, or deceptive persuasion.
+
+First: load GTM context
+
+Inspect available product/repository/context and establish:
+
+Product/category
+
+Primary use case and outcome
+
+ICP/user vs economic buyer
+
+Current alternatives
+
+Differentiator/proof
+
+Pricing/packaging if any
+
+Geography/language
+
+Current funnel and channels
+
+Existing customers/revenue/evidence
+
+Sales motion: self-serve, sales-assisted, outbound, marketplace, services-led, enterprise, or mixed
+
+If ../product-strategist outputs or a product strategy artifact exists, use it rather than reinventing product strategy.
+
+If current market/channel/competitor facts matter and web access exists, research them before recommending a GTM plan.
+
+GTM workflow
+
+1. ICP and buying situation
+
+Define the first market narrowly:
+
+Who feels the pain most?
+
+What event triggers purchase/search?
+
+Who uses the product?
+
+Who approves/pays?
+
+What alternatives are used today?
+
+What makes switching urgent?
+
+What objections block purchase?
+
+Where can these people be reached?
+
+Do not use vague ICPs such as “small businesses” unless narrowed by job, situation, or buying trigger.
+
+2. Positioning
+
+Build a positioning statement:
+
+For [ICP] struggling with [problem], [product] is a [category/alternative] that delivers [primary outcome]. Unlike [alternative], it [credible differentiated mechanism/proof].
+
+Then define:
+
+Category/frame of reference
+
+Primary value proposition
+
+2-4 supporting benefits
+
+Reasons to believe/proof
+
+Who it is NOT for
+
+A differentiator must matter to the buyer; technical uniqueness alone is insufficient.
+
+3. Messaging
+
+Create a message hierarchy:
+
+Problem/trigger
+
+Desired outcome
+
+Value proposition
+
+Mechanism/differentiator
+
+Proof
+
+Objection handling
+
+CTA
+
+Translate features into outcomes:
+
+Feature -> capability -> user benefit -> business/personal outcome -> proof
+
+Use the words customers use when evidence exists.
+
+4. Offer, pricing and packaging
+
+Audit:
+
+What exactly is being bought?
+
+Free trial, freemium, demo, one-time, subscription, usage, service-assisted?
+
+Does pricing scale with customer value?
+
+Is the entry offer low-friction enough?
+
+Is there a natural upgrade path?
+
+Are tiers differentiated by meaningful value, not arbitrary feature withholding?
+
+For unvalidated pricing, create tests rather than asserting an “optimal” price.
+
+5. Channel selection
+
+Evaluate channels using:
+
+ICP presence
+
+Intent level
+
+Speed to learning
+
+Cost
+
+Scalability
+
+Founder/team advantage
+
+Content/sales capability
+
+Product price and sales cycle
+
+Possible motions:
+
+SEO / AEO
+
+Educational content
+
+Communities
+
+Social organic
+
+Paid search/social
+
+Creator/influencer partnerships
+
+Directories/marketplaces
+
+Product-led loops
+
+Referral
+
+Partnerships
+
+Cold outbound
+
+Warm outbound
+
+Sales-led demos
+
+Events/webinars
+
+Select 1 primary acquisition channel + at most 1-2 supporting channels for an early-stage product.
+
+6. Funnel design
+
+Map:
+
+Audience -> Visit -> Qualified interest -> Signup/lead -> Activation -> Value -> Paid -> Retained -> Expansion/referral
+
+For every stage define:
+
+User question
+
+Required proof
+
+CTA
+
+Friction
+
+Metric
+
+Likely drop-off cause
+
+Distinguish traffic problems from conversion problems and retention problems.
+
+7. Landing page / conversion
+
+A strong landing page normally answers:
+
+What is this?
+
+Is it for me?
+
+What result will I get?
+
+Why is it better/different?
+
+Can I trust it?
+
+What does it cost / what happens next?
+
+What should I do now?
+
+Audit message-match between acquisition source and landing page.
+
+8. Sales motion
+
+Choose a motion that fits deal size and complexity.
+
+For sales-assisted/outbound flows:
+
+Target account -> trigger/reason now -> personalized relevance -> discovery -> qualification -> demo/proof -> objection handling -> proposal -> close -> onboarding
+
+Discovery should uncover:
+
+Current workflow
+
+Pain/cost
+
+Trigger/urgency
+
+Desired outcome
+
+Alternatives tried
+
+Decision process
+
+Budget/economic logic when appropriate
+
+Do not demo every feature; demonstrate the shortest path from pain to desired outcome.
+
+9. Objections
+
+Create an objection map:
+
+Too expensive
+
+Already use alternative
+
+No urgency
+
+Trust/security
+
+Complexity/setup
+
+Missing feature/integration
+
+Need approval
+
+Unsure of ROI
+
+For each: underlying concern -> evidence needed -> response -> proof asset -> next step.
+
+Never fabricate proof.
+
+10. Growth experiments
+
+Each experiment must contain:
+
+Funnel bottleneck
+
+Hypothesis
+
+Target segment
+
+Change/intervention
+
+Primary metric
+
+Guardrail metric
+
+Baseline if known
+
+Success threshold
+
+Duration/sample caveat
+
+Decision: scale / iterate / stop
+
+Prioritize experiments by potential impact, confidence, effort, and learning speed.
+
+11. Launch plan
+
+For launches define:
+
+Objective
+
+Audience
+
+Core message
+
+Offer
+
+Proof/assets
+
+Channel sequence
+
+Pre-launch demand capture
+
+Launch-day actions
+
+Follow-up/nurture
+
+Sales enablement
+
+Metrics
+
+Post-launch learning review
+
+A launch is a learning event, not a one-day announcement.
+
+Broad GTM review output
+
+When asked for an overall marketing/sales review, return:
+
+GTM diagnosis — biggest bottleneck and why.
+
+ICP & buying trigger.
+
+Positioning & differentiation.
+
+Message hierarchy.
+
+Offer / pricing / packaging recommendations.
+
+Channel strategy — primary + supporting channels and why.
+
+Funnel — current vs recommended.
+
+Sales motion — if relevant.
+
+Objection & proof plan.
+
+30-day experiment backlog — ranked, measurable tests.
+
+Metrics dashboard.
+
+Top 3 immediate actions.
+
+For a narrow task such as landing-page messaging or outbound, use only the relevant sections.
+
+Metrics
+
+Choose metrics by funnel stage.
+
+Acquisition:
+
+qualified visits/leads
+
+CAC/CPL where measurable
+
+Activation:
+
+activation rate
+
+time to first value
+
+Conversion:
+
+visitor -> signup
+
+signup -> activated
+
+activated -> paid
+
+lead -> meeting -> opportunity -> win
+
+Retention/economics:
+
+retention/churn
+
+repeat core action
+
+ARPU/ACV
+
+LTV/CAC only when inputs are credible
+
+payback period
+
+Content/channel:
+
+qualified traffic
+
+assisted conversions
+
+pipeline/revenue contribution
+
+Avoid optimizing CTR, impressions, followers, or raw leads in isolation.
+
+Evidence discipline
+
+Classify claims as:
+
+Verified — supported by data, customer evidence, product/research.
+
+Inferred — reasonable from evidence.
+
+Hypothesis — must be tested.
+
+When web research is used, prefer current primary sources and cite them in outputs when supported by the environment.
+
+Failure modes to prevent
+
+Targeting everyone.
+
+Copying a competitor's slogan.
+
+Confusing features with value propositions.
+
+Running paid ads before message/offer validation.
+
+Measuring marketing by impressions instead of qualified outcomes.
+
+Generating generic cold email at scale without relevance.
+
+Discounting to fix weak positioning.
+
+Treating launch as the end of GTM.
+
+Acquiring users who do not retain.

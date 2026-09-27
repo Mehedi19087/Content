@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -20,7 +21,7 @@ def profile_key(dna):
 
 def pending_result():
     return {
-        "ideas": [], "status": "preparing", "message": "Preparing your daily ideas.",
+        "ideas": [], "status": "preparing", "message": "Preparing your video ideas.",
         "evidence_mode": "INSUFFICIENT_EVIDENCE", "data_timestamp": None,
         "refresh_status": "not_needed", "creator_refresh_status": "not_needed",
     }
@@ -69,7 +70,8 @@ def daily_ideas(*, user_id):
                 break
         ideas = ideas[:3]
         expires = [parse_datetime(i["evidence_expires_at"]) for i in ideas]
-        next_refresh = min([now + timedelta(days=1)] + expires) if ideas else now + timedelta(hours=1)
+        feed_days = getattr(settings, "INTELLIGENCE_FEED_REFRESH_DAYS", 2)
+        next_refresh = min([now + timedelta(days=feed_days)] + expires) if ideas else now + timedelta(hours=1)
         if result.get("status") == "collecting_evidence":
             next_refresh = now + timedelta(minutes=1)
         result = {**result, "ideas": ideas, "status": "ready" if len(ideas) >= 3 else ("limited" if ideas else result["status"]),

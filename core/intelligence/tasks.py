@@ -46,3 +46,24 @@ def refresh_pool_task(pool_id, *, rediscover=False, requested_at=None):
 @shared_task(name="intelligence.refresh_due_pools", ignore_result=True)
 def refresh_due_pools_task():
     refresh_due_pools()
+
+
+@shared_task(name="intelligence.refresh_due_creator_feeds", ignore_result=True)
+def refresh_due_creator_feeds_task():
+    from .workflow_services import refresh_due_creator_feeds
+
+    refresh_due_creator_feeds()
+
+
+@shared_task(name="intelligence.generate_creator_feed", ignore_result=True)
+def generate_creator_feed_task(user_id):
+    from .feed_services import daily_ideas
+
+    try:
+        daily_ideas(user_id=user_id)
+    except Exception:
+        logger.exception(
+            "intelligence.creator_feed_generation_failed user_id=%s", user_id
+        )
+        raise
+
